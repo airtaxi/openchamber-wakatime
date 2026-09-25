@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="color-scheme" content="light dark" />
+    <title>WakaTime</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      body {
+        background: var(--oc-bg);
+        color: var(--oc-fg);
+        overflow: hidden;
+      }
+      #root {
+        box-sizing: border-box;
+        height: 100%;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        overflow: hidden;
+      }
+      .wt-header {
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .wt-title-row {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        min-width: 0;
+      }
+      .wt-title {
+        font-size: 0.95rem;
+        font-weight: 650;
+        letter-spacing: 0.01em;
+      }
+      .wt-identity {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--oc-muted);
+        font-size: 0.78rem;
+      }
+      .wt-controls {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .wt-tabs,
+      .wt-actions {
+        display: flex;
+        align-items: center;
+      }
+      .wt-body {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding-right: 2px;
+      }
+      .wt-footer {
+        flex: none;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        border-top: 1px solid var(--oc-border);
+        padding-top: 8px;
+      }
+      .wt-footer-note {
+        color: var(--oc-muted);
+        font-size: 0.72rem;
+      }
+      .wt-metrics {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 8px;
+      }
+      .wt-card {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 8px 10px;
+        border: 1px solid var(--oc-border);
+        border-radius: var(--oc-radius);
+        background: var(--oc-muted-surface);
+      }
+      .wt-card-label {
+        color: var(--oc-muted);
+        font-size: 0.7rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .wt-card-value {
+        font-size: 1.05rem;
+        font-weight: 650;
+        font-variant-numeric: tabular-nums;
+      }
+      .wt-card-sub {
+        color: var(--oc-muted);
+        font-size: 0.72rem;
+      }
+      .wt-section {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .wt-section-title {
+        margin: 0;
+        color: var(--oc-muted);
+        font-size: 0.78rem;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+      .wt-note {
+        margin: 0;
+        color: var(--oc-muted);
+        font-size: 0.78rem;
+      }
+      .wt-current {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        padding: 8px 10px;
+        border: 1px solid var(--oc-border);
+        border-left: 3px solid var(--oc-primary);
+        border-radius: var(--oc-radius);
+        background: var(--oc-muted-surface);
+      }
+      .wt-current-label {
+        color: var(--oc-muted);
+        font-size: 0.72rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .wt-current-name {
+        font-size: 0.85rem;
+      }
+      .wt-current-time {
+        margin-left: auto;
+        font-size: 0.82rem;
+        font-variant-numeric: tabular-nums;
+      }
+      .wt-current-branch {
+        color: var(--oc-muted);
+        font-family: var(--oc-mono);
+        font-size: 0.72rem;
+      }
+      .wt-chart {
+        display: flex;
+        align-items: flex-end;
+        gap: 3px;
+        height: 104px;
+      }
+      .wt-bar-col {
+        flex: 1 1 0;
+        min-width: 0;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .wt-bar-track {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        align-items: flex-end;
+      }
+      .wt-bar {
+        width: 100%;
+        min-height: 2px;
+        border-radius: 3px;
+        background: var(--oc-primary);
+        transition: height 120ms ease;
+      }
+      .wt-bar[data-empty="true"] {
+        background: var(--oc-border);
+      }
+      .wt-bar-label {
+        flex: none;
+        min-height: 0.8rem;
+        text-align: center;
+        color: var(--oc-muted);
+        font-size: 0.65rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="main.js"></script>
+  </body>
+</html>

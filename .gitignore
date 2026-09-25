@@ -1,0 +1,4 @@
+node_modules/
+
+# Built guest scripts are committed on purpose: OpenChamber never builds an
+# extension after install, so panel/main.js and service/main.js must be present.
