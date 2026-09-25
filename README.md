@@ -4,6 +4,13 @@ A WakaTime panel for [OpenChamber](https://openchamber.dev). It sits on the righ
 
 The panel reads the API key from `~/.wakatime.cfg`, the same file the WakaTime plugins write, so there is nothing to paste into OpenChamber.
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/panel-overview.jpg" width="390" alt="WakaTime panel showing the totals, the daily activity chart, languages, and projects" />
+  <img src="docs/panel-ai-coding.jpg" width="390" alt="WakaTime panel showing editors, operating systems, and the AI coding section" />
+</p>
+
 ## Requirements
 
 - OpenChamber `2.0.0` or newer, on web or desktop.
