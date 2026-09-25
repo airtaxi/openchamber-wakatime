@@ -36,7 +36,7 @@ The API key never reaches the panel, and the panel never sees the network. The s
 - A daily bar chart for the last 7 or 30 days.
 - Rankings for languages, projects, editors, and operating systems.
 - **Working on**: the WakaTime project whose name matches the OpenChamber project you have open, with its time and last branch.
-- **AI coding**: cost, tokens in and out, cached input tokens, AI versus human line changes, and a per-model cost list.
+- **AI coding**: the AI share of changed lines with a bar next to the AI and human line counts, AI coding time beside human coding time, cost, tokens in and out, cached input tokens, sessions and prompts, and a per-model cost list.
 - A warning when WakaTime is still aggregating a range, a refresh button, and a link to the dashboard.
 
 The UI follows the app language: Korean when the locale starts with `ko`, English otherwise.
@@ -53,6 +53,8 @@ All calls use `Authorization: Basic base64(api_key)` against `https://api.wakati
 | Always | `/users/current`, `/users/current/all_time_since_today` |
 
 Responses are normalized in the service and cached for 60 seconds. A manual refresh bypasses the cache. When the stats endpoint is still aggregating a range, the service rebuilds the rankings and AI totals from the daily summaries instead of showing empty sections.
+
+AI versus human line changes and the AI Coding versus Coding time split are summed from the daily summaries, so they always match the days the panel is showing and need no extra requests. WakaTime does not expose separate review or follow-up metrics for AI-generated code, so the panel reports the AI share instead.
 
 ## Configuration
 

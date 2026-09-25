@@ -46,16 +46,18 @@ type ConfigState = {
 type Metric = { seconds: number };
 type Ranked = { name: string; seconds: number; percent: number };
 type DayPoint = { date: string; seconds: number };
+type LineSplit = { ai: number; human: number; share: number };
+type CategoryTime = { name: string; seconds: number; percent: number };
 type AiModel = { name: string; lines: number; cost: number };
 type AiSummary = {
   cost: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
-  additions: number;
-  deletions: number;
-  humanAdditions: number;
-  humanDeletions: number;
+  sessions: number;
+  promptEvents: number;
+  aiCodingSeconds: number;
+  codingSeconds: number;
   models: AiModel[];
 };
 
@@ -80,6 +82,7 @@ type SummaryPayload = {
   dailyAverage?: Metric;
   allTime?: { seconds: number; dailyAverageSeconds: number };
   bestDay?: { date: string; seconds: number };
+  lines?: LineSplit;
   ai?: AiSummary | null;
   days?: DayPoint[];
   languages?: Ranked[];
@@ -241,40 +244,89 @@ const aggregateRanked = (days: any[], field: string): Ranked[] => {
     .slice(0, RANKING_LIMIT);
 };
 
+/**
+ * AI versus human line changes for the range, taken from the daily totals so
+ * the ratio always matches the days the panel is showing.
+ */
+const sumLineChanges = (days: any[]): LineSplit => {
+  let ai = 0;
+  let human = 0;
+  for (const day of days) {
+    const grand = day?.grand_total;
+    if (!grand) continue;
+    ai += numberOr(grand.ai_additions, 0) + numberOr(grand.ai_deletions, 0);
+    human += numberOr(grand.human_additions, 0) + numberOr(grand.human_deletions, 0);
+  }
+  const total = ai + human;
+  return { ai, human, share: total > 0 ? (ai / total) * 100 : 0 };
+};
+
+/** Sum the per-day category breakdown, so the range matches the summaries exactly. */
+const aggregateCategories = (days: any[]): CategoryTime[] => {
+  const totals = new Map<string, number>();
+  for (const day of days) {
+    const items = day?.categories;
+    if (!Array.isArray(items)) continue;
+    for (const item of items) {
+      const name = typeof item?.name === 'string' ? item.name.trim() : '';
+      if (!name) continue;
+      totals.set(name, (totals.get(name) ?? 0) + numberOr(item.total_seconds, 0));
+    }
+  }
+  const sum = Array.from(totals.values()).reduce((total, value) => total + value, 0);
+  return Array.from(totals.entries())
+    .map(([name, seconds]) => ({ name, seconds, percent: sum > 0 ? (seconds / sum) * 100 : 0 }))
+    .sort((left, right) => right.seconds - left.seconds);
+};
+
+const categorySeconds = (categories: CategoryTime[], name: string): number => (
+  categories.find((entry) => entry.name.toLowerCase() === name)?.seconds ?? 0
+);
+
+const modelsFromMaps = (costs: Map<string, number>, lines: Map<string, number>): AiModel[] => {
+  const models: AiModel[] = Array.from(new Set([...costs.keys(), ...lines.keys()]))
+    .map((name) => ({ name, lines: lines.get(name) ?? 0, cost: costs.get(name) ?? 0 }));
+  models.sort((left, right) => right.cost - left.cost);
+  return models;
+};
+
+const modelsFromSource = (source: any): AiModel[] => {
+  if (Array.isArray(source?.ai_model_breakdown)) {
+    const models: AiModel[] = source.ai_model_breakdown.map((model: any) => ({
+      name: String(model?.name ?? 'Unknown'),
+      lines: numberOr(model?.lines, 0),
+      cost: numberOr(model?.cost, 0),
+    }));
+    models.sort((left, right) => right.cost - left.cost);
+    return models;
+  }
+  const costs = new Map<string, number>();
+  const lines = new Map<string, number>();
+  const costMap = source?.ai_model_costs && typeof source.ai_model_costs === 'object' ? source.ai_model_costs : {};
+  const lineMap = source?.ai_model_line_changes && typeof source.ai_model_line_changes === 'object'
+    ? source.ai_model_line_changes
+    : {};
+  for (const [name, value] of Object.entries(costMap)) costs.set(name, numberOr(value, 0));
+  for (const [name, value] of Object.entries(lineMap)) lines.set(name, numberOr(value, 0));
+  return modelsFromMaps(costs, lines);
+};
+
 const buildAi = (source: any): AiSummary | null => {
   if (!source || typeof source !== 'object') return null;
+  const models = modelsFromSource(source);
   const cost = numberOr(source.ai_model_total_cost, 0);
-  const additions = numberOr(source.ai_additions, 0);
-  const deletions = numberOr(source.ai_deletions, 0);
-  const humanAdditions = numberOr(source.human_additions, 0);
-  const humanDeletions = numberOr(source.human_deletions, 0);
   const inputTokens = numberOr(source.ai_input_tokens, 0);
   const outputTokens = numberOr(source.ai_output_tokens, 0);
   const cachedInputTokens = numberOr(source.ai_cached_input_tokens, 0);
+  const sessions = numberOr(source.ai_sessions, 0);
+  const promptEvents = numberOr(source.ai_prompt_events_total, 0);
 
-  const models: AiModel[] = [];
-  if (Array.isArray(source.ai_model_breakdown)) {
-    for (const model of source.ai_model_breakdown) {
-      models.push({
-        name: String(model?.name ?? 'Unknown'),
-        lines: numberOr(model?.lines, 0),
-        cost: numberOr(model?.cost, 0),
-      });
-    }
-  } else {
-    const costs = source.ai_model_costs && typeof source.ai_model_costs === 'object' ? source.ai_model_costs : {};
-    const lines = source.ai_model_line_changes && typeof source.ai_model_line_changes === 'object'
-      ? source.ai_model_line_changes
-      : {};
-    for (const name of new Set([...Object.keys(costs), ...Object.keys(lines)])) {
-      models.push({ name, lines: numberOr(lines[name], 0), cost: numberOr(costs[name], 0) });
-    }
-  }
-  models.sort((left, right) => right.cost - left.cost);
-
-  const active = cost > 0 || additions > 0 || deletions > 0 || inputTokens > 0 || outputTokens > 0 || models.length > 0;
+  const active = cost > 0 || inputTokens > 0 || outputTokens > 0 || sessions > 0 || models.length > 0;
   if (!active) return null;
-  return { cost, inputTokens, cachedInputTokens, outputTokens, additions, deletions, humanAdditions, humanDeletions, models };
+  return {
+    cost, inputTokens, cachedInputTokens, outputTokens, sessions, promptEvents,
+    aiCodingSeconds: 0, codingSeconds: 0, models,
+  };
 };
 
 /** Fallback when the stats endpoint is stale: sum the daily AI figures. */
@@ -283,10 +335,8 @@ const aggregateAi = (days: any[]): AiSummary | null => {
   let inputTokens = 0;
   let cachedInputTokens = 0;
   let outputTokens = 0;
-  let additions = 0;
-  let deletions = 0;
-  let humanAdditions = 0;
-  let humanDeletions = 0;
+  let sessions = 0;
+  let promptEvents = 0;
   const costs = new Map<string, number>();
   const lines = new Map<string, number>();
 
@@ -297,10 +347,8 @@ const aggregateAi = (days: any[]): AiSummary | null => {
     inputTokens += numberOr(grand.ai_input_tokens, 0);
     cachedInputTokens += numberOr(grand.ai_cached_input_tokens, 0);
     outputTokens += numberOr(grand.ai_output_tokens, 0);
-    additions += numberOr(grand.ai_additions, 0);
-    deletions += numberOr(grand.ai_deletions, 0);
-    humanAdditions += numberOr(grand.human_additions, 0);
-    humanDeletions += numberOr(grand.human_deletions, 0);
+    sessions += numberOr(grand.ai_sessions, 0);
+    promptEvents += numberOr(grand.ai_prompt_events_total, 0);
     const dayCosts = grand.ai_model_costs;
     if (dayCosts && typeof dayCosts === 'object') {
       for (const [name, value] of Object.entries(dayCosts)) {
@@ -315,13 +363,13 @@ const aggregateAi = (days: any[]): AiSummary | null => {
     }
   }
 
-  const models: AiModel[] = Array.from(new Set([...costs.keys(), ...lines.keys()]))
-    .map((name) => ({ name, lines: lines.get(name) ?? 0, cost: costs.get(name) ?? 0 }));
-  models.sort((left, right) => right.cost - left.cost);
-
-  const active = cost > 0 || additions > 0 || deletions > 0 || inputTokens > 0 || outputTokens > 0 || models.length > 0;
+  const models = modelsFromMaps(costs, lines);
+  const active = cost > 0 || inputTokens > 0 || outputTokens > 0 || sessions > 0 || models.length > 0;
   if (!active) return null;
-  return { cost, inputTokens, cachedInputTokens, outputTokens, additions, deletions, humanAdditions, humanDeletions, models };
+  return {
+    cost, inputTokens, cachedInputTokens, outputTokens, sessions, promptEvents,
+    aiCodingSeconds: 0, codingSeconds: 0, models,
+  };
 };
 
 /** Use the range aggregate from stats, or rebuild it from the daily summaries. */
@@ -373,6 +421,26 @@ const buildSummary = async (range: Range, apiKey: string, configPath: string): P
     || Boolean(statsResult?.stale)
     || stats?.is_up_to_date === false;
 
+  const categories = aggregateCategories(daysRaw);
+  const aiBase = buildAi(stats) ?? aggregateAi(daysRaw);
+  const aiCodingSeconds = categorySeconds(categories, 'ai coding');
+  const codingSeconds = categorySeconds(categories, 'coding');
+  const ai: AiSummary | null = aiBase
+    ? { ...aiBase, aiCodingSeconds, codingSeconds }
+    : aiCodingSeconds + codingSeconds > 0
+      ? {
+        cost: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        sessions: 0,
+        promptEvents: 0,
+        aiCodingSeconds,
+        codingSeconds,
+        models: [],
+      }
+      : null;
+
   return {
     configured: true,
     configPath,
@@ -399,7 +467,8 @@ const buildSummary = async (range: Range, apiKey: string, configPath: string): P
       }
       : undefined,
     bestDay,
-    ai: buildAi(stats) ?? aggregateAi(daysRaw),
+    lines: sumLineChanges(daysRaw),
+    ai,
     days,
     languages: rankingFor(stats?.languages, daysRaw, 'languages'),
     projects: rankingFor(stats?.projects, daysRaw, 'projects'),

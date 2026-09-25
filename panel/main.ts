@@ -21,16 +21,17 @@ type Range = 'today' | '7d' | '30d';
 
 type Ranked = { name: string; seconds: number; percent: number };
 type DayPoint = { date: string; seconds: number };
+type LineSplit = { ai: number; human: number; share: number };
 type AiModel = { name: string; lines: number; cost: number };
 type AiSummary = {
   cost: number;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
-  additions: number;
-  deletions: number;
-  humanAdditions: number;
-  humanDeletions: number;
+  sessions: number;
+  promptEvents: number;
+  aiCodingSeconds: number;
+  codingSeconds: number;
   models: AiModel[];
 };
 
@@ -55,6 +56,7 @@ type SummaryPayload = {
   dailyAverage?: { seconds: number };
   allTime?: { seconds: number; dailyAverageSeconds: number };
   bestDay?: { date: string; seconds: number };
+  lines?: LineSplit;
   ai?: AiSummary | null;
   days?: DayPoint[];
   languages?: Ranked[];
@@ -98,8 +100,12 @@ const EN: Record<string, string> = {
   aiTokens: 'Tokens',
   aiTokensDetail: 'in {input} · out {output}',
   aiCachedTokens: 'Cached input',
-  aiLines: 'AI lines',
-  aiLinesDetail: 'human {human}',
+  aiShareOfLines: 'AI share of lines',
+  aiLinesSummary: 'AI {ai} · human {human} lines',
+  aiCodingTime: 'AI coding time',
+  aiCodingTimeSub: 'human coding {value}',
+  aiSessions: 'Sessions',
+  aiSessionsSub: '{value} prompts',
   aiModels: 'Models',
   aiNoActivity: 'No AI activity in this range.',
   stale: 'WakaTime is still aggregating this range, so the numbers can change.',
@@ -143,8 +149,12 @@ const KO: Record<string, string> = {
   aiTokens: '토큰',
   aiTokensDetail: '입력 {input} · 출력 {output}',
   aiCachedTokens: '캐시 입력',
-  aiLines: 'AI 라인',
-  aiLinesDetail: '사람 {human}',
+  aiShareOfLines: '라인 기준 AI 비중',
+  aiLinesSummary: 'AI {ai} · 사람 {human} 라인',
+  aiCodingTime: 'AI 코딩 시간',
+  aiCodingTimeSub: '사람 코딩 {value}',
+  aiSessions: '세션',
+  aiSessionsSub: '프롬프트 {value}개',
   aiModels: '모델',
   aiNoActivity: '이 기간에 AI 활동이 없습니다.',
   stale: 'WakaTime이 아직 이 기간을 집계 중이라 값이 바뀔 수 있습니다.',
@@ -227,6 +237,10 @@ const compact = (value: number): string => (
     ? new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 }).format(value)
     : '0'
 );
+
+const count = (value: number): string => new Intl.NumberFormat(locale, {
+  maximumFractionDigits: 0,
+}).format(Number.isFinite(value) ? value : 0);
 
 const money = (value: number): string => new Intl.NumberFormat(locale, {
   style: 'currency',
@@ -340,13 +354,37 @@ const chartSection = (days: DayPoint[]): HTMLElement => {
   return section;
 };
 
-const aiSection = (ai: AiSummary | null | undefined): HTMLElement => {
+const aiSection = (lines: LineSplit | undefined, ai: AiSummary | null | undefined): HTMLElement => {
   const section = sectionShell(t('ai'));
+
+  const totalLines = (lines?.ai ?? 0) + (lines?.human ?? 0);
+  if (lines && totalLines > 0) {
+    const box = el('div', 'wt-ai-share');
+    const head = el('div', 'wt-ai-share-head');
+    head.append(el('span', 'wt-ai-share-label', t('aiShareOfLines')));
+    head.append(el('span', 'wt-ai-share-value', `${Math.round(lines.share)}%`));
+    const track = el('div', 'wt-ai-share-track');
+    const fill = el('div', 'wt-ai-share-fill');
+    fill.style.width = `${Math.min(100, Math.max(0, lines.share))}%`;
+    track.append(fill);
+    box.append(head, track);
+    box.append(el('div', 'wt-card-sub', t('aiLinesSummary', { ai: count(lines.ai), human: count(lines.human) })));
+    section.append(box);
+  }
+
   if (!ai) {
     section.append(el('p', 'wt-note', t('aiNoActivity')));
     return section;
   }
+
   const metrics = el('div', 'wt-metrics');
+  if (ai.aiCodingSeconds + ai.codingSeconds > 0) {
+    metrics.append(metricCard(
+      t('aiCodingTime'),
+      duration(ai.aiCodingSeconds),
+      t('aiCodingTimeSub', { value: duration(ai.codingSeconds) }),
+    ));
+  }
   metrics.append(
     metricCard(t('aiCost'), money(ai.cost), ai.models.length > 0 ? `${ai.models.length} ${t('aiModels')}` : undefined),
     metricCard(t('aiTokens'), compact(ai.inputTokens + ai.outputTokens), t('aiTokensDetail', {
@@ -354,12 +392,14 @@ const aiSection = (ai: AiSummary | null | undefined): HTMLElement => {
       output: compact(ai.outputTokens),
     })),
     metricCard(t('aiCachedTokens'), compact(ai.cachedInputTokens)),
-    metricCard(
-      t('aiLines'),
-      `+${ai.additions} / -${ai.deletions}`,
-      t('aiLinesDetail', { human: `+${ai.humanAdditions} / -${ai.humanDeletions}` }),
-    ),
   );
+  if (ai.sessions > 0 || ai.promptEvents > 0) {
+    metrics.append(metricCard(
+      t('aiSessions'),
+      count(ai.sessions),
+      t('aiSessionsSub', { value: count(ai.promptEvents) }),
+    ));
+  }
   section.append(metrics);
   if (ai.models.length > 0) {
     const listRoot = el('div');
@@ -426,7 +466,7 @@ const dataView = (payload: SummaryPayload): void => {
     bodyRoot.append(rankingSection(t('operatingSystems'), payload.operatingSystems ?? [], null));
   }
 
-  bodyRoot.append(aiSection(payload.ai));
+  bodyRoot.append(aiSection(payload.lines, payload.ai));
 };
 
 const paintIdentity = (payload: SummaryPayload | null): void => {
