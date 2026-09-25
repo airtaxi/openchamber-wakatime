@@ -1,5 +1,7 @@
 # OpenChamber WakaTime
 
+🌐 English | [한국어](README.ko.md)
+
 A WakaTime panel for [OpenChamber](https://openchamber.dev). It sits on the right-hand rail and shows your coding activity without leaving the editor: today's time, a daily chart, language and project rankings, editors and operating systems, and the AI coding cost WakaTime tracks.
 
 The panel reads the API key from `~/.wakatime.cfg`, the same file the WakaTime plugins write, so there is nothing to paste into OpenChamber.
@@ -91,7 +93,3 @@ To publish an update, raise `version` in `package.json`, run the build, commit, 
 ## License
 
 MIT. Copyright (c) 2026 Howon Lee (airtaxi).
-
-## 한국어 요약
-
-OpenChamber 오른쪽 레일에서 WakaTime 현황을 보여주는 확장입니다. `~/.wakatime.cfg`의 `api_key`를 로컬 서비스가 직접 읽고 WakaTime API를 호출하므로, 별도로 토큰을 붙여넣을 필요가 없습니다. 오늘 누적과 일별 그래프, 언어·프로젝트 순위, 에디터·운영체제 비중, AI 코딩 비용을 보여주고, 현재 열어 둔 OpenChamber 프로젝트와 이름이 같은 WakaTime 프로젝트를 강조합니다. 설치할 때 로컬 서비스 권한을 한 번 승인해야 하며, 이 프로세스는 사용자 권한으로 실행됩니다.
