@@ -9,7 +9,8 @@ if (!port || !token) {
   console.error("OPENCHAMBER_SERVICE_PORT and OPENCHAMBER_SERVICE_TOKEN are required");
   process.exit(1);
 }
-var API_ORIGIN = "https://api.wakatime.com/api/v1";
+var DEFAULT_API_URL = "https://api.wakatime.com/api/v1";
+var API_BASE_SUFFIXES = ["", "/compat/wakatime/v1", "/v1"];
 var CACHE_TTL_MS = 60000;
 var UPSTREAM_TIMEOUT_MS = 12000;
 var RANKING_LIMIT = 8;
@@ -40,31 +41,75 @@ var resolveConfigPath = () => {
   const override = process.env.OPENCHAMBER_WAKATIME_CONFIG?.trim();
   return override && override.length > 0 ? override : path.join(homeDirectory(), ".wakatime.cfg");
 };
+var normalizeApiUrl = (raw) => {
+  let url = raw.trim().replace(/\/+$/, "");
+  for (const suffix of [".bulk", "/users/current/heartbeats", "/heartbeats", "/heartbeat"]) {
+    if (url.endsWith(suffix))
+      url = url.slice(0, -suffix.length);
+  }
+  return url.replace(/\/+$/, "") || DEFAULT_API_URL;
+};
+var unquote = (value) => value.trim().replace(/^["']|["']$/g, "");
 var readConfig = () => {
   const configPath = resolveConfigPath();
+  const envApiUrl = process.env.OPENCHAMBER_WAKATIME_API_URL?.trim() ?? "";
   let raw;
   try {
     raw = fs.readFileSync(configPath, "utf8");
   } catch {
-    return { configured: false, reason: "no-file", configPath };
+    return { configured: false, reason: "no-file", apiUrl: normalizeApiUrl(envApiUrl), configPath };
   }
   let apiKey = "";
+  let apiUrl = "";
+  let section = "";
   for (const line of raw.replace(/^\uFEFF/, "").split(/\r?\n/)) {
-    const match = /^\s*api_?key\s*=\s*(.*)$/i.exec(line);
-    if (match)
-      apiKey = match[1].trim().replace(/^["']|["']$/g, "");
+    const header = /^\s*\[([^\]]*)\]\s*$/.exec(line);
+    if (header) {
+      section = header[1].trim().toLowerCase();
+      continue;
+    }
+    const keyMatch = /^\s*api_?key\s*=\s*(.*)$/i.exec(line);
+    if (keyMatch)
+      apiKey = unquote(keyMatch[1]);
+    const urlMatch = /^\s*api_url\s*=\s*(.*)$/i.exec(line);
+    if (urlMatch && (section === "" || section === "settings"))
+      apiUrl = unquote(urlMatch[1]);
   }
+  const resolvedApiUrl = normalizeApiUrl(envApiUrl || apiUrl);
   if (!apiKey)
-    return { configured: false, reason: "no-key", configPath };
-  return { configured: true, apiKey, configPath };
+    return { configured: false, reason: "no-key", apiUrl: resolvedApiUrl, configPath };
+  return { configured: true, apiKey, apiUrl: resolvedApiUrl, configPath };
 };
-var upstream = async (apiKey, apiPath, query) => {
-  const url = new URL(`${API_ORIGIN}${apiPath}`);
-  for (const [key, value] of Object.entries(query ?? {}))
-    url.searchParams.set(key, value);
-  let response;
+var isWakaTimeCom = (apiUrl) => {
   try {
-    response = await fetch(url, {
+    const host = new URL(apiUrl).hostname;
+    return host === "wakatime.com" || host.endsWith(".wakatime.com");
+  } catch {
+    return false;
+  }
+};
+var serverInfo = (apiUrl) => {
+  if (isWakaTimeCom(apiUrl)) {
+    return {
+      label: "WakaTime",
+      custom: false,
+      apiUrl,
+      dashboardUrl: "https://wakatime.com/dashboard",
+      apiKeyUrl: "https://wakatime.com/api-key"
+    };
+  }
+  let origin = apiUrl;
+  let host = apiUrl;
+  try {
+    const parsed = new URL(apiUrl);
+    origin = parsed.origin;
+    host = parsed.host;
+  } catch {}
+  return { label: host, custom: true, apiUrl, dashboardUrl: `${origin}/`, apiKeyUrl: `${origin}/` };
+};
+var send = async (label, apiKey, url) => {
+  try {
+    return await fetch(url, {
       headers: {
         Authorization: `Basic ${Buffer.from(apiKey).toString("base64")}`,
         Accept: "application/json",
@@ -75,13 +120,45 @@ var upstream = async (apiKey, apiPath, query) => {
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new UpstreamError("network", `Could not reach WakaTime: ${detail}`, 502);
+    throw new UpstreamError("network", `Could not reach ${label}: ${detail}`, 502);
   }
+};
+var resolvedBases = new Map;
+var resolveApi = async (apiKey, remote) => {
+  const label = remote.label;
+  const known = resolvedBases.get(remote.apiUrl);
+  if (known)
+    return { base: known, label };
+  let parsed;
+  try {
+    parsed = new URL(remote.apiUrl);
+  } catch {
+    throw new UpstreamError("api", `api_url "${remote.apiUrl}" is not a valid URL.`, 500);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new UpstreamError("api", `api_url "${remote.apiUrl}" must start with http:// or https://.`, 500);
+  }
+  const candidates = Array.from(new Set(API_BASE_SUFFIXES.map((suffix) => `${remote.apiUrl}${suffix}`)));
+  for (const base of candidates) {
+    const response = await send(label, apiKey, new URL(`${base}/users/current`));
+    await response.body?.cancel();
+    if (response.status === 404)
+      continue;
+    resolvedBases.set(remote.apiUrl, base);
+    return { base, label };
+  }
+  throw new UpstreamError("api", `${label} has no WakaTime-compatible API at ${remote.apiUrl}. Tried: ${candidates.join(", ")}.`, 500);
+};
+var upstream = async (api, apiKey, apiPath, query) => {
+  const url = new URL(`${api.base}${apiPath}`);
+  for (const [key, value] of Object.entries(query ?? {}))
+    url.searchParams.set(key, value);
+  const response = await send(api.label, apiKey, url);
   if (response.status === 401 || response.status === 403) {
-    throw new UpstreamError("invalid-key", "WakaTime rejected the stored API key.", 401);
+    throw new UpstreamError("invalid-key", `${api.label} rejected the stored API key.`, 401);
   }
   if (response.status === 429 || response.status >= 300 && response.status < 400) {
-    throw new UpstreamError("rate-limited", "WakaTime is throttling this instance. Try again in a moment.", 429);
+    throw new UpstreamError("rate-limited", `${api.label} is throttling this instance. Try again in a moment.`, 429);
   }
   const text = await response.text();
   let body = null;
@@ -94,11 +171,11 @@ var upstream = async (apiKey, apiPath, query) => {
     return { body, stale: true };
   if (response.status >= 400) {
     const errors = body?.errors;
-    const message = Array.isArray(errors) && errors.length > 0 ? errors.join(", ") : typeof body?.error === "string" && body.error.length > 0 ? body.error : `WakaTime answered HTTP ${response.status}.`;
+    const message = Array.isArray(errors) && errors.length > 0 ? errors.join(", ") : typeof body?.error === "string" && body.error.length > 0 ? body.error : `${api.label} answered HTTP ${response.status}.`;
     throw new UpstreamError("api", String(message), 500);
   }
   if (body === null) {
-    throw new UpstreamError("api", "WakaTime returned an unreadable response.", 500);
+    throw new UpstreamError("api", `${api.label} returned an unreadable response.`, 500);
   }
   return { body, stale: false };
 };
@@ -262,13 +339,14 @@ var rankingFor = (statItems, days, field) => {
   const fromStats = ranked(statItems);
   return fromStats.length > 0 ? fromStats : aggregateRanked(days, field);
 };
-var buildSummary = async (range, apiKey, configPath) => {
+var buildSummary = async (range, apiKey, configPath, remote) => {
   const spec = RANGE_SPEC[range];
+  const api = await resolveApi(apiKey, remote);
   const [userResult, summaryResult, statsResult, allTimeResult] = await Promise.all([
-    upstream(apiKey, "/users/current"),
-    settle(upstream(apiKey, "/users/current/summaries", { range: spec.summary })),
-    spec.stats ? settle(upstream(apiKey, `/users/current/stats/${spec.stats}`)) : Promise.resolve(null),
-    settle(upstream(apiKey, "/users/current/all_time_since_today"))
+    upstream(api, apiKey, "/users/current"),
+    settle(upstream(api, apiKey, "/users/current/summaries", { range: spec.summary })),
+    spec.stats ? settle(upstream(api, apiKey, `/users/current/stats/${spec.stats}`)) : Promise.resolve(null),
+    settle(upstream(api, apiKey, "/users/current/all_time_since_today"))
   ]);
   const userRaw = userResult.body?.data ?? null;
   const daysRaw = Array.isArray(summaryResult?.body?.data) ? summaryResult.body.data : [];
@@ -301,6 +379,7 @@ var buildSummary = async (range, apiKey, configPath) => {
   return {
     configured: true,
     configPath,
+    server: remote,
     range,
     fetchedAt: new Date().toISOString(),
     cached: false,
@@ -342,12 +421,14 @@ var handleSummary = async (url, response) => {
   const range = parseRange(url.searchParams.get("range"));
   const refresh = url.searchParams.get("refresh") === "1";
   const config = readConfig();
+  const remote = serverInfo(config.apiUrl);
   const fetchedAt = new Date().toISOString();
   if (!config.configured) {
     json(response, 200, {
       configured: false,
       reason: config.reason ?? "no-file",
       configPath: config.configPath,
+      server: remote,
       range,
       fetchedAt,
       cached: false,
@@ -355,20 +436,22 @@ var handleSummary = async (url, response) => {
     });
     return;
   }
-  const hit = cache.get(range);
+  const cacheKey = `${remote.apiUrl}|${range}`;
+  const hit = cache.get(cacheKey);
   if (!refresh && hit && Date.now() - hit.at < CACHE_TTL_MS) {
     json(response, 200, { ...hit.payload, cached: true, fetchedAt });
     return;
   }
   try {
-    const payload = await buildSummary(range, config.apiKey ?? "", config.configPath);
-    cache.set(range, { at: Date.now(), payload });
+    const payload = await buildSummary(range, config.apiKey ?? "", config.configPath, remote);
+    cache.set(cacheKey, { at: Date.now(), payload });
     json(response, 200, payload);
   } catch (error) {
     if (error instanceof UpstreamError) {
       json(response, error.status, {
         configured: true,
         configPath: config.configPath,
+        server: remote,
         range,
         fetchedAt,
         cached: false,
@@ -381,6 +464,7 @@ var handleSummary = async (url, response) => {
     json(response, 500, {
       configured: true,
       configPath: config.configPath,
+      server: remote,
       range,
       fetchedAt,
       cached: false,
