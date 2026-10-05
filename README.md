@@ -25,6 +25,18 @@ api_key = waka_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
 If that file is missing, the panel shows where it looked and a link to issue a key.
 
+### Self-hosted servers
+
+Like wakatime-cli, the panel honours `api_url` in the same `[settings]` section, so it works with WakaTime-compatible servers such as [Wakapi](https://wakapi.dev):
+
+```ini
+[settings]
+api_key = your-wakapi-key
+api_url = https://wakapi.example.com/api
+```
+
+Use the same value your editor plugins send heartbeats to. Some servers serve the read API at a different path than heartbeats (Wakapi keeps it under `/api/compat/wakatime/v1`), so the service tries `api_url` as written, then with `/compat/wakatime/v1`, then with `/v1`, and remembers the first one that answers. Legacy values that end in `/heartbeat`, `/heartbeats` or `.bulk` are trimmed the way wakatime-cli trims them. The footer button and the API key link then open your server instead of wakatime.com.
+
 ## Install
 
 **From a folder** (for development): open **Settings → Extensions**, paste the absolute path of this folder, and choose **Add**.
@@ -35,7 +47,7 @@ Either way, OpenChamber shows the permission list once. This extension declares 
 
 ## Why a local service
 
-A panel runs in a sandboxed iframe. It cannot reach the network directly, and the host only attaches tokens you pasted on an Integrations card. Reading `~/.wakatime.cfg` and calling `https://api.wakatime.com` therefore needs a small process next to the extension. OpenChamber starts `service/main.js` from this folder with its own runtime, and the panel talks to it through `host.serviceRequest`.
+A panel runs in a sandboxed iframe. It cannot reach the network directly, and the host only attaches tokens you pasted on an Integrations card. Reading `~/.wakatime.cfg` and calling `https://api.wakatime.com` (or your `api_url`) therefore needs a small process next to the extension. OpenChamber starts `service/main.js` from this folder with its own runtime, and the panel talks to it through `host.serviceRequest`.
 
 The API key never reaches the panel, and the panel never sees the network. The service listens on `127.0.0.1` and the host proxies to it.
 
@@ -52,11 +64,11 @@ The UI follows the app language: Korean when the locale starts with `ko`, Englis
 
 ## Endpoints used
 
-All calls use `Authorization: Basic base64(api_key)` against `https://api.wakatime.com/api/v1`.
+All calls use `Authorization: Basic base64(api_key)` against `https://api.wakatime.com/api/v1`, or against the read API found under `api_url` (see [Self-hosted servers](#self-hosted-servers)).
 
 | Panel range | Requests |
 | --- | --- |
-| Today | `/users/current/status_bar/today` |
+| Today | `/users/current/summaries?range=Today` |
 | 7 days | `/users/current/summaries?range=Last 7 Days`, `/users/current/stats/last_7_days` |
 | 30 days | `/users/current/summaries?range=Last 30 Days`, `/users/current/stats/last_30_days` |
 | Always | `/users/current`, `/users/current/all_time_since_today` |
@@ -70,6 +82,7 @@ AI versus human line changes and the AI Coding versus Coding time split are summ
 | Variable | Effect |
 | --- | --- |
 | `OPENCHAMBER_WAKATIME_CONFIG` | Overrides the config path. Useful for testing a fake home directory. |
+| `OPENCHAMBER_WAKATIME_API_URL` | Overrides `api_url` from the config file. |
 
 ## Development
 

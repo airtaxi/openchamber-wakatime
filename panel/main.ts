@@ -3,7 +3,8 @@
  *
  * The panel itself never touches the disk or the network. It asks the
  * extension's local service for a normalized summary through `serviceRequest`,
- * and the service reads ~/.wakatime.cfg and calls the WakaTime API.
+ * and the service reads ~/.wakatime.cfg and calls the WakaTime API, or the
+ * server its `api_url` points at.
  */
 import { connectHost, HostRequestError } from '@openchamber/sdk';
 import {
@@ -35,10 +36,20 @@ type AiSummary = {
   models: AiModel[];
 };
 
+type ServerInfo = {
+  label: string;
+  custom: boolean;
+  apiUrl: string;
+  dashboardUrl: string;
+  apiKeyUrl: string;
+};
+
 type SummaryPayload = {
   configured: boolean;
   reason?: 'no-file' | 'no-key';
   configPath: string;
+  /** Missing only from a service older than this panel. */
+  server?: ServerInfo;
   range: Range;
   fetchedAt: string;
   cached: boolean;
@@ -76,6 +87,13 @@ type ViewState =
 const DASHBOARD_URL = 'https://wakatime.com/dashboard';
 const API_KEY_URL = 'https://wakatime.com/api-key';
 const REFRESH_MS = 5 * 60 * 1000;
+const DEFAULT_SERVER: ServerInfo = {
+  label: 'WakaTime',
+  custom: false,
+  apiUrl: 'https://api.wakatime.com/api/v1',
+  dashboardUrl: DASHBOARD_URL,
+  apiKeyUrl: API_KEY_URL,
+};
 
 const EN: Record<string, string> = {
   refresh: 'Refresh',
@@ -112,6 +130,7 @@ const EN: Record<string, string> = {
   cachedNote: 'cached',
   updated: 'Updated',
   openDashboard: 'Open wakatime.com',
+  openServer: 'Open {host}',
   notConfiguredTitle: 'WakaTime is not connected',
   notConfiguredFile: 'No config file was found at {path} on the OpenChamber server. Install a WakaTime plugin, or create that file with an api_key in the [settings] section.',
   notConfiguredKey: 'The config at {path} has no api_key. Add one to the [settings] section.',
@@ -161,6 +180,7 @@ const KO: Record<string, string> = {
   cachedNote: '캐시됨',
   updated: '갱신',
   openDashboard: 'wakatime.com 열기',
+  openServer: '{host} 열기',
   notConfiguredTitle: 'WakaTime이 연결되지 않았습니다',
   notConfiguredFile: 'OpenChamber 서버의 {path}에서 설정 파일을 찾지 못했습니다. WakaTime 플러그인을 설치하거나, [settings] 섹션에 api_key를 넣어 파일을 만들어 주세요.',
   notConfiguredKey: '{path}에 api_key가 없습니다. [settings] 섹션에 추가해 주세요.',
@@ -186,6 +206,8 @@ let shellBuilt = false;
 let view: ViewState = { kind: 'loading' };
 let generation = 0;
 let loading = false;
+/** The server the last summary came from; links and labels follow it. */
+let server: ServerInfo = DEFAULT_SERVER;
 const blocks: Disposable[] = [];
 
 let bodyRoot: HTMLElement;
@@ -482,12 +504,16 @@ const paintIdentity = (payload: SummaryPayload | null): void => {
   identityBox.title = identityBox.textContent;
 };
 
+const dashboardLabel = (): string => (
+  server.custom ? t('openServer', { host: server.label }) : t('openDashboard')
+);
+
 const paintFooter = (): void => {
   const payload = view.kind === 'loading' || view.kind === 'host-error' ? null : view.payload;
   footerNote.textContent = payload
     ? `${t('updated')} ${formatTime(payload.fetchedAt)}${payload.cached ? ` · ${t('cachedNote')}` : ''}`
     : '';
-  footerButton.update({ label: t('openDashboard') });
+  footerButton.update({ label: dashboardLabel() });
 };
 
 const paintControls = (): void => {
@@ -503,6 +529,9 @@ const paintControls = (): void => {
 };
 
 const paint = (): void => {
+  if (view.kind !== 'loading' && view.kind !== 'host-error' && view.payload.server) {
+    server = view.payload.server;
+  }
   clearBody();
   switch (view.kind) {
     case 'loading':
@@ -522,7 +551,7 @@ const paint = (): void => {
         blocks.push(mountEmpty(bodyRoot, {
           title: t('invalidKeyTitle'),
           body: t('invalidKeyBody', { path: view.payload.configPath }),
-          action: { label: t('getApiKey'), onClick: () => void host.openUrl(API_KEY_URL) },
+          action: { label: t('getApiKey'), onClick: () => void host.openUrl(server.apiKeyUrl) },
         }));
         break;
       }
@@ -545,7 +574,7 @@ const paint = (): void => {
         body: t(view.payload.reason === 'no-key' ? 'notConfiguredKey' : 'notConfiguredFile', {
           path: view.payload.configPath,
         }),
-        action: { label: t('getApiKey'), onClick: () => void host.openUrl(API_KEY_URL) },
+        action: { label: t('getApiKey'), onClick: () => void host.openUrl(server.apiKeyUrl) },
       }));
       break;
     case 'data':
@@ -653,10 +682,10 @@ const buildShell = (): void => {
     onClick: () => void load(true),
   });
   footerButton = mountButton(footerActions, {
-    label: t('openDashboard'),
+    label: dashboardLabel(),
     variant: 'ghost',
     size: 'xs',
-    onClick: () => void host.openUrl(DASHBOARD_URL),
+    onClick: () => void host.openUrl(server.dashboardUrl),
   });
 };
 

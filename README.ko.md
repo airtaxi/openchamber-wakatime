@@ -25,6 +25,18 @@ api_key = waka_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
 설정 파일이 없으면 패널이 어떤 경로를 확인했는지와 API 키 발급 링크를 함께 보여줍니다.
 
+### 자체 호스팅 서버
+
+wakatime-cli와 마찬가지로 같은 `[settings]` 섹션의 `api_url`을 따르므로, [Wakapi](https://wakapi.dev) 같은 WakaTime 호환 서버에서도 동작합니다.
+
+```ini
+[settings]
+api_key = your-wakapi-key
+api_url = https://wakapi.example.com/api
+```
+
+에디터 플러그인이 하트비트를 보내는 값과 같은 값을 쓰면 됩니다. 일부 서버는 조회 API를 하트비트와 다른 경로에 둡니다(Wakapi는 `/api/compat/wakatime/v1`). 그래서 서비스는 `api_url`을 그대로, 그다음 `/compat/wakatime/v1`, `/v1`을 붙여 차례로 시도하고 처음 응답한 경로를 기억합니다. `/heartbeat`, `/heartbeats`, `.bulk`로 끝나는 예전 형식의 값은 wakatime-cli처럼 잘라 냅니다. 이때 하단 버튼과 API 키 링크는 wakatime.com 대신 해당 서버를 엽니다.
+
 ## 설치
 
 **폴더에서 설치**(개발용): **설정 → 확장**을 열고 이 폴더의 절대 경로를 붙여 넣은 뒤 **Add**를 선택합니다.
@@ -35,7 +47,7 @@ api_key = waka_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
 ## 로컬 서비스를 사용하는 이유
 
-패널은 샌드박스 iframe에서 실행되므로 네트워크에 직접 접근할 수 없습니다. 또한 호스트는 통합 카드에 직접 붙여넣은 토큰만 요청에 실어 줍니다. 그래서 `~/.wakatime.cfg`를 읽고 `https://api.wakatime.com`을 호출하려면 확장 옆에 작은 프로세스가 필요합니다. OpenChamber가 이 폴더의 `service/main.js`를 자체 런타임으로 실행하고, 패널은 `host.serviceRequest`를 통해 그 프로세스와 통신합니다.
+패널은 샌드박스 iframe에서 실행되므로 네트워크에 직접 접근할 수 없습니다. 또한 호스트는 통합 카드에 직접 붙여넣은 토큰만 요청에 실어 줍니다. 그래서 `~/.wakatime.cfg`를 읽고 `https://api.wakatime.com`(또는 `api_url`)을 호출하려면 확장 옆에 작은 프로세스가 필요합니다. OpenChamber가 이 폴더의 `service/main.js`를 자체 런타임으로 실행하고, 패널은 `host.serviceRequest`를 통해 그 프로세스와 통신합니다.
 
 API 키는 패널에 전달되지 않고, 패널은 네트워크에 접근하지 않습니다. 서비스는 `127.0.0.1`에서 수신하며 호스트가 이를 프록시합니다.
 
@@ -52,11 +64,11 @@ UI는 앱 언어를 따릅니다. 로케일이 `ko`로 시작하면 한국어를
 
 ## 사용하는 엔드포인트
 
-모든 호출은 `https://api.wakatime.com/api/v1`에 대해 `Authorization: Basic base64(api_key)` 형식을 사용합니다.
+모든 호출은 `https://api.wakatime.com/api/v1`, 또는 `api_url`에서 찾은 조회 API에 대해 `Authorization: Basic base64(api_key)` 형식을 사용합니다([자체 호스팅 서버](#자체-호스팅-서버) 참고).
 
 | 패널 범위 | 요청 |
 | --- | --- |
-| 오늘 | `/users/current/status_bar/today` |
+| 오늘 | `/users/current/summaries?range=Today` |
 | 7일 | `/users/current/summaries?range=Last 7 Days`, `/users/current/stats/last_7_days` |
 | 30일 | `/users/current/summaries?range=Last 30 Days`, `/users/current/stats/last_30_days` |
 | 공통 | `/users/current`, `/users/current/all_time_since_today` |
@@ -70,6 +82,7 @@ AI·사람 라인 변화와 AI Coding·Coding 시간 비중은 일별 요약에�
 | 변수 | 효과 |
 | --- | --- |
 | `OPENCHAMBER_WAKATIME_CONFIG` | 설정 파일 경로를 덮어씁니다. 가짜 홈 디렉터리로 테스트할 때 유용합니다. |
+| `OPENCHAMBER_WAKATIME_API_URL` | 설정 파일의 `api_url`을 덮어씁니다. |
 
 ## 개발
 

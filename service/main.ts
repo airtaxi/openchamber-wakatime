@@ -7,6 +7,9 @@
  * the API key from ~/.wakatime.cfg itself, calls the WakaTime API, and answers
  * the panel over the host's loopback proxy. The key never leaves this process.
  *
+ * Like wakatime-cli, it honours `api_url` in the same file, so a self-hosted
+ * WakaTime-compatible server (Wakapi, Hakatime, ...) works as well.
+ *
  * Contract: packages/sdk/GUEST_SERVICES.md in the OpenChamber repository.
  */
 import fs from 'node:fs';
@@ -21,7 +24,13 @@ if (!port || !token) {
   process.exit(1);
 }
 
-const API_ORIGIN = 'https://api.wakatime.com/api/v1';
+const DEFAULT_API_URL = 'https://api.wakatime.com/api/v1';
+/**
+ * Where a server keeps the WakaTime-compatible read API, relative to its
+ * `api_url`. WakaTime answers on the URL itself; Wakapi takes heartbeats on
+ * `<host>/api` but serves summaries and stats under `/compat/wakatime/v1`.
+ */
+const API_BASE_SUFFIXES = ['', '/compat/wakatime/v1', '/v1'];
 const CACHE_TTL_MS = 60_000;
 const UPSTREAM_TIMEOUT_MS = 12_000;
 const RANKING_LIMIT = 8;
@@ -40,8 +49,21 @@ type ConfigState = {
   configured: boolean;
   reason?: 'no-file' | 'no-key';
   apiKey?: string;
+  apiUrl: string;
   configPath: string;
 };
+
+type ServerInfo = {
+  /** "WakaTime" for wakatime.com, otherwise the server's host name. */
+  label: string;
+  custom: boolean;
+  apiUrl: string;
+  dashboardUrl: string;
+  apiKeyUrl: string;
+};
+
+/** A resolved read API: the base every endpoint path is appended to. */
+type Api = { base: string; label: string };
 
 type Metric = { seconds: number };
 type Ranked = { name: string; seconds: number; percent: number };
@@ -65,6 +87,7 @@ type SummaryPayload = {
   configured: boolean;
   reason?: 'no-file' | 'no-key';
   configPath: string;
+  server: ServerInfo;
   range: Range;
   fetchedAt: string;
   cached: boolean;
@@ -125,40 +148,90 @@ const resolveConfigPath = (): string => {
 };
 
 /**
+ * wakatime-cli also accepts an `api_url` that points at the heartbeat
+ * endpoint itself, so strip those legacy endings the same way it does.
+ */
+const normalizeApiUrl = (raw: string): string => {
+  let url = raw.trim().replace(/\/+$/, '');
+  for (const suffix of ['.bulk', '/users/current/heartbeats', '/heartbeats', '/heartbeat']) {
+    if (url.endsWith(suffix)) url = url.slice(0, -suffix.length);
+  }
+  return url.replace(/\/+$/, '') || DEFAULT_API_URL;
+};
+
+const unquote = (value: string): string => value.trim().replace(/^["']|["']$/g, '');
+
+/**
  * ~/.wakatime.cfg is INI-like. The key lives in [settings] as `api_key = ...`,
  * but reading every `api_key` line and keeping the last one tolerates the
- * variations different WakaTime plugins write.
+ * variations different WakaTime plugins write. `api_url` is only read from
+ * [settings], which is where wakatime-cli looks for it.
  */
 const readConfig = (): ConfigState => {
   const configPath = resolveConfigPath();
+  const envApiUrl = process.env.OPENCHAMBER_WAKATIME_API_URL?.trim() ?? '';
   let raw: string;
   try {
     raw = fs.readFileSync(configPath, 'utf8');
   } catch {
-    return { configured: false, reason: 'no-file', configPath };
+    return { configured: false, reason: 'no-file', apiUrl: normalizeApiUrl(envApiUrl), configPath };
   }
   let apiKey = '';
+  let apiUrl = '';
+  let section = '';
   for (const line of raw.replace(/^\uFEFF/, '').split(/\r?\n/)) {
-    const match = /^\s*api_?key\s*=\s*(.*)$/i.exec(line);
-    if (match) apiKey = match[1].trim().replace(/^["']|["']$/g, '');
+    const header = /^\s*\[([^\]]*)\]\s*$/.exec(line);
+    if (header) {
+      section = header[1].trim().toLowerCase();
+      continue;
+    }
+    const keyMatch = /^\s*api_?key\s*=\s*(.*)$/i.exec(line);
+    if (keyMatch) apiKey = unquote(keyMatch[1]);
+    const urlMatch = /^\s*api_url\s*=\s*(.*)$/i.exec(line);
+    if (urlMatch && (section === '' || section === 'settings')) apiUrl = unquote(urlMatch[1]);
   }
-  if (!apiKey) return { configured: false, reason: 'no-key', configPath };
-  return { configured: true, apiKey, configPath };
+  const resolvedApiUrl = normalizeApiUrl(envApiUrl || apiUrl);
+  if (!apiKey) return { configured: false, reason: 'no-key', apiUrl: resolvedApiUrl, configPath };
+  return { configured: true, apiKey, apiUrl: resolvedApiUrl, configPath };
+};
+
+const isWakaTimeCom = (apiUrl: string): boolean => {
+  try {
+    const host = new URL(apiUrl).hostname;
+    return host === 'wakatime.com' || host.endsWith('.wakatime.com');
+  } catch {
+    return false;
+  }
+};
+
+/** What the panel needs to name the server and link to it. */
+const serverInfo = (apiUrl: string): ServerInfo => {
+  if (isWakaTimeCom(apiUrl)) {
+    return {
+      label: 'WakaTime',
+      custom: false,
+      apiUrl,
+      dashboardUrl: 'https://wakatime.com/dashboard',
+      apiKeyUrl: 'https://wakatime.com/api-key',
+    };
+  }
+  let origin = apiUrl;
+  let host = apiUrl;
+  try {
+    const parsed = new URL(apiUrl);
+    origin = parsed.origin;
+    host = parsed.host;
+  } catch {
+    // Reported as an error by resolveApi; keep the raw value for display.
+  }
+  return { label: host, custom: true, apiUrl, dashboardUrl: `${origin}/`, apiKeyUrl: `${origin}/` };
 };
 
 type UpstreamResult = { body: any; stale: boolean };
 
-const upstream = async (
-  apiKey: string,
-  apiPath: string,
-  query?: Record<string, string>,
-): Promise<UpstreamResult> => {
-  const url = new URL(`${API_ORIGIN}${apiPath}`);
-  for (const [key, value] of Object.entries(query ?? {})) url.searchParams.set(key, value);
-
-  let response: Response;
+const send = async (label: string, apiKey: string, url: URL): Promise<Response> => {
   try {
-    response = await fetch(url, {
+    return await fetch(url, {
       headers: {
         Authorization: `Basic ${Buffer.from(apiKey).toString('base64')}`,
         Accept: 'application/json',
@@ -170,14 +243,64 @@ const upstream = async (
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new UpstreamError('network', `Could not reach WakaTime: ${detail}`, 502);
+    throw new UpstreamError('network', `Could not reach ${label}: ${detail}`, 502);
+  }
+};
+
+/** The read API base for each api_url, found once and then reused. */
+const resolvedBases = new Map<string, string>();
+
+/**
+ * Find where the server answers `/users/current`. A 404 means the read API
+ * lives elsewhere, so the next candidate is tried. Any other answer, including
+ * a rejected key, settles the base and the real request reports the problem.
+ */
+const resolveApi = async (apiKey: string, remote: ServerInfo): Promise<Api> => {
+  const label = remote.label;
+  const known = resolvedBases.get(remote.apiUrl);
+  if (known) return { base: known, label };
+
+  let parsed: URL;
+  try {
+    parsed = new URL(remote.apiUrl);
+  } catch {
+    throw new UpstreamError('api', `api_url "${remote.apiUrl}" is not a valid URL.`, 500);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new UpstreamError('api', `api_url "${remote.apiUrl}" must start with http:// or https://.`, 500);
   }
 
+  const candidates = Array.from(new Set(API_BASE_SUFFIXES.map((suffix) => `${remote.apiUrl}${suffix}`)));
+  for (const base of candidates) {
+    const response = await send(label, apiKey, new URL(`${base}/users/current`));
+    await response.body?.cancel();
+    if (response.status === 404) continue;
+    resolvedBases.set(remote.apiUrl, base);
+    return { base, label };
+  }
+  throw new UpstreamError(
+    'api',
+    `${label} has no WakaTime-compatible API at ${remote.apiUrl}. Tried: ${candidates.join(', ')}.`,
+    500,
+  );
+};
+
+const upstream = async (
+  api: Api,
+  apiKey: string,
+  apiPath: string,
+  query?: Record<string, string>,
+): Promise<UpstreamResult> => {
+  const url = new URL(`${api.base}${apiPath}`);
+  for (const [key, value] of Object.entries(query ?? {})) url.searchParams.set(key, value);
+
+  const response = await send(api.label, apiKey, url);
+
   if (response.status === 401 || response.status === 403) {
-    throw new UpstreamError('invalid-key', 'WakaTime rejected the stored API key.', 401);
+    throw new UpstreamError('invalid-key', `${api.label} rejected the stored API key.`, 401);
   }
   if (response.status === 429 || (response.status >= 300 && response.status < 400)) {
-    throw new UpstreamError('rate-limited', 'WakaTime is throttling this instance. Try again in a moment.', 429);
+    throw new UpstreamError('rate-limited', `${api.label} is throttling this instance. Try again in a moment.`, 429);
   }
 
   const text = await response.text();
@@ -195,11 +318,11 @@ const upstream = async (
       ? errors.join(', ')
       : typeof body?.error === 'string' && body.error.length > 0
         ? body.error
-        : `WakaTime answered HTTP ${response.status}.`;
+        : `${api.label} answered HTTP ${response.status}.`;
     throw new UpstreamError('api', String(message), 500);
   }
   if (body === null) {
-    throw new UpstreamError('api', 'WakaTime returned an unreadable response.', 500);
+    throw new UpstreamError('api', `${api.label} returned an unreadable response.`, 500);
   }
   return { body, stale: false };
 };
@@ -378,15 +501,21 @@ const rankingFor = (statItems: unknown, days: any[], field: string): Ranked[] =>
   return fromStats.length > 0 ? fromStats : aggregateRanked(days, field);
 };
 
-const buildSummary = async (range: Range, apiKey: string, configPath: string): Promise<SummaryPayload> => {
+const buildSummary = async (
+  range: Range,
+  apiKey: string,
+  configPath: string,
+  remote: ServerInfo,
+): Promise<SummaryPayload> => {
   const spec = RANGE_SPEC[range];
+  const api = await resolveApi(apiKey, remote);
 
   // The user call validates the key, so its errors are not swallowed.
   const [userResult, summaryResult, statsResult, allTimeResult] = await Promise.all([
-    upstream(apiKey, '/users/current'),
-    settle(upstream(apiKey, '/users/current/summaries', { range: spec.summary })),
-    spec.stats ? settle(upstream(apiKey, `/users/current/stats/${spec.stats}`)) : Promise.resolve(null),
-    settle(upstream(apiKey, '/users/current/all_time_since_today')),
+    upstream(api, apiKey, '/users/current'),
+    settle(upstream(api, apiKey, '/users/current/summaries', { range: spec.summary })),
+    spec.stats ? settle(upstream(api, apiKey, `/users/current/stats/${spec.stats}`)) : Promise.resolve(null),
+    settle(upstream(api, apiKey, '/users/current/all_time_since_today')),
   ]);
 
   const userRaw = userResult.body?.data ?? null;
@@ -444,6 +573,7 @@ const buildSummary = async (range: Range, apiKey: string, configPath: string): P
   return {
     configured: true,
     configPath,
+    server: remote,
     range,
     fetchedAt: new Date().toISOString(),
     cached: false,
@@ -477,7 +607,8 @@ const buildSummary = async (range: Range, apiKey: string, configPath: string): P
   };
 };
 
-const cache = new Map<Range, { at: number; payload: SummaryPayload }>();
+/** Keyed by api_url and range, so editing api_url never serves the old server's numbers. */
+const cache = new Map<string, { at: number; payload: SummaryPayload }>();
 
 const json = (response: http.ServerResponse, status: number, body: unknown): void => {
   response.writeHead(status, {
@@ -495,6 +626,7 @@ const handleSummary = async (url: URL, response: http.ServerResponse): Promise<v
   const range = parseRange(url.searchParams.get('range'));
   const refresh = url.searchParams.get('refresh') === '1';
   const config = readConfig();
+  const remote = serverInfo(config.apiUrl);
   const fetchedAt = new Date().toISOString();
 
   if (!config.configured) {
@@ -502,6 +634,7 @@ const handleSummary = async (url: URL, response: http.ServerResponse): Promise<v
       configured: false,
       reason: config.reason ?? 'no-file',
       configPath: config.configPath,
+      server: remote,
       range,
       fetchedAt,
       cached: false,
@@ -510,21 +643,23 @@ const handleSummary = async (url: URL, response: http.ServerResponse): Promise<v
     return;
   }
 
-  const hit = cache.get(range);
+  const cacheKey = `${remote.apiUrl}|${range}`;
+  const hit = cache.get(cacheKey);
   if (!refresh && hit && Date.now() - hit.at < CACHE_TTL_MS) {
     json(response, 200, { ...hit.payload, cached: true, fetchedAt });
     return;
   }
 
   try {
-    const payload = await buildSummary(range, config.apiKey ?? '', config.configPath);
-    cache.set(range, { at: Date.now(), payload });
+    const payload = await buildSummary(range, config.apiKey ?? '', config.configPath, remote);
+    cache.set(cacheKey, { at: Date.now(), payload });
     json(response, 200, payload);
   } catch (error) {
     if (error instanceof UpstreamError) {
       json(response, error.status, {
         configured: true,
         configPath: config.configPath,
+        server: remote,
         range,
         fetchedAt,
         cached: false,
@@ -537,6 +672,7 @@ const handleSummary = async (url: URL, response: http.ServerResponse): Promise<v
     json(response, 500, {
       configured: true,
       configPath: config.configPath,
+      server: remote,
       range,
       fetchedAt,
       cached: false,
