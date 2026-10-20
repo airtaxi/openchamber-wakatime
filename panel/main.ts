@@ -343,11 +343,13 @@ const tokenForm = (configPath: string): HTMLElement => {
     label: t('tokenLabel'),
     value: tokenDraft,
     placeholder: 'waka_tok_…',
+    password: true,
     mono: true,
     helper,
+    // The field is controlled: every update repaints from props, so the value must travel with it.
     onChange: (value) => {
       tokenDraft = value;
-      field.update({ error: undefined });
+      field.update({ value, error: undefined });
     },
   });
 

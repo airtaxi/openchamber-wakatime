@@ -181,7 +181,7 @@ const upstream = async (
       headers: {
         Authorization: authorizationHeader(credential),
         Accept: 'application/json',
-        'User-Agent': 'openchamber-wakatime/1.1.2',
+        'User-Agent': 'openchamber-wakatime/1.1.3',
       },
       // WakaTime sometimes answers 302 instead of 429 when it throttles.
       redirect: 'manual',
