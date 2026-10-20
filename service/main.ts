@@ -181,7 +181,7 @@ const upstream = async (
       headers: {
         Authorization: authorizationHeader(credential),
         Accept: 'application/json',
-        'User-Agent': 'openchamber-wakatime/1.1.0',
+        'User-Agent': 'openchamber-wakatime/1.1.1',
       },
       // WakaTime sometimes answers 302 instead of 429 when it throttles.
       redirect: 'manual',
@@ -500,6 +500,109 @@ const buildSummary = async (range: Range, credential: Credential, configPath: st
 
 const cache = new Map<Range, { at: number; credential: string; payload: SummaryPayload }>();
 
+const TOKEN_BODY_LIMIT = 16_384;
+
+/**
+ * Writes `oauth_token` into the [settings] section and leaves every other line
+ * as the plugins wrote it. Existing `oauth_token` lines are replaced in place.
+ */
+const writeOAuthToken = (configPath: string, oauthToken: string): void => {
+  let raw = '';
+  try {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch {
+    raw = '';
+  }
+  const bom = raw.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const newline = raw.includes('\r\n') ? '\r\n' : '\n';
+  const lines = raw.length > 0 ? raw.slice(bom.length).split(/\r?\n/) : [];
+  const entry = `oauth_token = ${oauthToken}`;
+
+  let replaced = false;
+  const updated = lines.map((line) => {
+    if (!/^\s*oauth_?token\s*=/i.test(line)) return line;
+    replaced = true;
+    return entry;
+  });
+
+  if (!replaced) {
+    const settingsIndex = updated.findIndex((line) => /^\s*\[settings\]\s*$/i.test(line));
+    if (settingsIndex >= 0) {
+      updated.splice(settingsIndex + 1, 0, entry);
+    } else {
+      while (updated.length > 0 && updated[updated.length - 1].trim() === '') updated.pop();
+      if (updated.length > 0) updated.push('');
+      updated.push('[settings]', entry);
+    }
+  }
+
+  let text = updated.join(newline);
+  if (!text.endsWith(newline)) text += newline;
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, bom + text, 'utf8');
+};
+
+const readBody = (request: http.IncomingMessage): Promise<string> => new Promise((resolve, reject) => {
+  let body = '';
+  request.setEncoding('utf8');
+  request.on('data', (chunk: string) => {
+    body += chunk;
+    if (body.length > TOKEN_BODY_LIMIT) {
+      reject(new Error('Request body is too large.'));
+      request.destroy();
+    }
+  });
+  request.on('end', () => resolve(body));
+  request.on('error', reject);
+});
+
+type TokenResult = { ok: boolean; error?: { code: ErrorCode | 'invalid-token' | 'write-failed'; message: string } };
+
+const handleToken = async (request: http.IncomingMessage, response: http.ServerResponse): Promise<void> => {
+  let oauthToken = '';
+  try {
+    const parsed = JSON.parse(await readBody(request));
+    oauthToken = typeof parsed?.token === 'string' ? unquote(parsed.token) : '';
+  } catch {
+    oauthToken = '';
+  }
+  if (!oauthToken || /\s/.test(oauthToken)) {
+    json(response, 400, {
+      ok: false,
+      error: { code: 'invalid-token', message: 'Paste the whole OAuth token without spaces or line breaks.' },
+    } satisfies TokenResult);
+    return;
+  }
+
+  // Check the token before touching the config, so a typo never replaces a working one.
+  try {
+    await upstream({ kind: 'oauth', secret: oauthToken }, '/users/current');
+  } catch (error) {
+    const upstreamError = error instanceof UpstreamError
+      ? error
+      : new UpstreamError('api', error instanceof Error ? error.message : String(error), 500);
+    json(response, upstreamError.status, {
+      ok: false,
+      error: { code: upstreamError.code, message: upstreamError.message },
+    } satisfies TokenResult);
+    return;
+  }
+
+  try {
+    writeOAuthToken(resolveConfigPath(), oauthToken);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    json(response, 500, {
+      ok: false,
+      error: { code: 'write-failed', message: `Could not save the token: ${detail}` },
+    } satisfies TokenResult);
+    return;
+  }
+
+  cache.clear();
+  json(response, 200, { ok: true } satisfies TokenResult);
+};
+
 const json = (response: http.ServerResponse, status: number, body: unknown): void => {
   response.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -581,6 +684,10 @@ const server = http.createServer((request, response) => {
   }
   if (url.pathname === '/summary') {
     void handleSummary(url, response);
+    return;
+  }
+  if (url.pathname === '/token' && request.method === 'POST') {
+    void handleToken(request, response);
     return;
   }
   json(response, 404, { error: { code: 'not-found', message: 'not-found' } });

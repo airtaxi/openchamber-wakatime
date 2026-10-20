@@ -14,6 +14,7 @@ import {
   mountList,
   mountSpinner,
   mountTabs,
+  mountTextField,
   type Tone,
 } from '@openchamber/sdk/ui';
 
@@ -114,15 +115,22 @@ const EN: Record<string, string> = {
   updated: 'Updated',
   openDashboard: 'Open wakatime.com',
   notConfiguredTitle: 'WakaTime is not connected',
-  notConfiguredFile: 'No config file was found at {path} on the OpenChamber server. Create that file and add an oauth_token to the [settings] section.',
-  notConfiguredKey: 'The config at {path} has no oauth_token. Add one to the [settings] section.',
+  notConfiguredFile: 'No config file was found at {path} on the OpenChamber server. Paste an OAuth token below to create it.',
+  notConfiguredKey: 'The config at {path} has no OAuth token. Paste one below.',
   getOAuthToken: 'Get an OAuth token',
   invalidOAuthTitle: 'WakaTime rejected the OAuth token',
-  invalidOAuthBody: 'The token may have expired or been revoked. Issue a new one and update oauth_token in {path}.',
+  invalidOAuthBody: 'The token may have expired or been revoked. Issue a new one and paste it below.',
   invalidApiKeyTitle: 'WakaTime no longer accepts the API key for stats',
-  invalidApiKeyBody: 'WakaTime API keys now work only for plugins. Add an oauth_token to the [settings] section of {path}.',
+  invalidApiKeyBody: 'WakaTime API keys now work only for plugins. Paste an OAuth token below.',
   apiKeyNoticeTitle: 'Switch to an OAuth token',
-  apiKeyNoticeBody: 'Stats are read with the plugin API key, which WakaTime is limiting to plugins. Add an oauth_token to the [settings] section of {path}.',
+  apiKeyNoticeBody: 'Stats are read with the plugin API key, which WakaTime is limiting to plugins. Paste an OAuth token below.',
+  tokenLabel: 'OAuth token',
+  tokenHelper: 'Saved as oauth_token in {path}. The plugin api_key stays as it is.',
+  tokenApply: 'Apply',
+  tokenMissing: 'Paste a token first.',
+  tokenRejected: 'WakaTime rejected this token. Check that you copied all of it.',
+  tokenMalformed: 'Paste the whole token without spaces or line breaks.',
+  tokenNetwork: 'Could not reach WakaTime. Try again in a moment.',
   rateLimitedTitle: 'WakaTime is throttling requests',
   networkTitle: 'Could not reach WakaTime',
   apiErrorTitle: 'WakaTime answered with an error',
@@ -167,15 +175,22 @@ const KO: Record<string, string> = {
   updated: '갱신',
   openDashboard: 'wakatime.com 열기',
   notConfiguredTitle: 'WakaTime이 연결되지 않았습니다',
-  notConfiguredFile: 'OpenChamber 서버의 {path}에서 설정 파일을 찾지 못했습니다. 파일을 만들고 [settings] 섹션에 oauth_token을 추가해 주세요.',
-  notConfiguredKey: '{path}에 oauth_token이 없습니다. [settings] 섹션에 추가해 주세요.',
+  notConfiguredFile: 'OpenChamber 서버의 {path}에서 설정 파일을 찾지 못했습니다. 아래에 OAuth 토큰을 붙여 넣으면 파일을 만듭니다.',
+  notConfiguredKey: '{path}에 OAuth 토큰이 없습니다. 아래에 붙여 넣어 주세요.',
   getOAuthToken: 'OAuth 토큰 발급받기',
   invalidOAuthTitle: 'WakaTime이 OAuth 토큰을 거부했습니다',
-  invalidOAuthBody: '토큰이 만료되었거나 취소되었을 수 있습니다. 새 토큰을 발급해 {path}의 oauth_token을 갱신해 주세요.',
+  invalidOAuthBody: '토큰이 만료되었거나 취소되었을 수 있습니다. 새 토큰을 발급해 아래에 붙여 넣어 주세요.',
   invalidApiKeyTitle: 'WakaTime이 더 이상 API 키로 통계를 제공하지 않습니다',
-  invalidApiKeyBody: '이제 WakaTime API 키는 플러그인에서만 쓸 수 있습니다. {path}의 [settings] 섹션에 oauth_token을 추가해 주세요.',
+  invalidApiKeyBody: '이제 WakaTime API 키는 플러그인에서만 쓸 수 있습니다. 아래에 OAuth 토큰을 붙여 넣어 주세요.',
   apiKeyNoticeTitle: 'OAuth 토큰으로 전환해 주세요',
-  apiKeyNoticeBody: '지금은 플러그인용 API 키로 통계를 읽고 있습니다. WakaTime이 API 키를 플러그인 전용으로 제한하므로, {path}의 [settings] 섹션에 oauth_token을 추가해 주세요.',
+  apiKeyNoticeBody: '지금은 플러그인용 API 키로 통계를 읽고 있습니다. WakaTime이 API 키를 플러그인 전용으로 제한하므로, 아래에 OAuth 토큰을 붙여 넣어 주세요.',
+  tokenLabel: 'OAuth 토큰',
+  tokenHelper: '{path}에 oauth_token으로 저장합니다. 플러그인의 api_key는 그대로 둡니다.',
+  tokenApply: '적용',
+  tokenMissing: '토큰을 먼저 붙여 넣어 주세요.',
+  tokenRejected: 'WakaTime이 이 토큰을 거부했습니다. 토큰 전체를 복사했는지 확인해 주세요.',
+  tokenMalformed: '공백이나 줄바꿈 없이 토큰 전체를 붙여 넣어 주세요.',
+  tokenNetwork: 'WakaTime에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.',
   rateLimitedTitle: 'WakaTime이 요청을 제한하고 있습니다',
   networkTitle: 'WakaTime에 연결하지 못했습니다',
   apiErrorTitle: 'WakaTime이 오류를 반환했습니다',
@@ -195,6 +210,7 @@ let shellBuilt = false;
 let view: ViewState = { kind: 'loading' };
 let generation = 0;
 let loading = false;
+let tokenDraft = '';
 const blocks: Disposable[] = [];
 
 let bodyRoot: HTMLElement;
@@ -302,6 +318,92 @@ const findCurrentProject = (projects: Ranked[] | undefined, dir: string | null):
 const clearBody = (): void => {
   for (const block of blocks.splice(0)) block.dispose();
   bodyRoot.replaceChildren();
+};
+
+type TokenResult = { ok: boolean; error?: { code: string; message: string } };
+
+const tokenErrorText = (result: TokenResult | null, status: number): string => {
+  const code = result?.error?.code;
+  if (code === 'invalid-key') return t('tokenRejected');
+  if (code === 'invalid-token') return t('tokenMalformed');
+  if (code === 'network') return t('tokenNetwork');
+  return result?.error?.message ?? `${status}: unreadable service response`;
+};
+
+/** Token input that saves through the service, then reloads the summary. */
+const tokenForm = (configPath: string): HTMLElement => {
+  const form = el('div', 'wt-token');
+  const fieldRoot = el('div', 'wt-token-field');
+  const actionsRoot = el('div', 'wt-token-actions');
+  form.append(fieldRoot, actionsRoot);
+
+  let saving = false;
+  const helper = t('tokenHelper', { path: configPath });
+  const field = mountTextField(fieldRoot, {
+    label: t('tokenLabel'),
+    value: tokenDraft,
+    placeholder: 'waka_tok_…',
+    password: true,
+    mono: true,
+    helper,
+    onChange: (value) => {
+      tokenDraft = value;
+      field.update({ error: undefined });
+    },
+  });
+
+  const apply = async (): Promise<void> => {
+    if (saving) return;
+    const value = tokenDraft.trim();
+    if (!value) {
+      field.update({ error: t('tokenMissing') });
+      return;
+    }
+    saving = true;
+    field.update({ disabled: true, error: undefined });
+    applyButton.update({ loading: true });
+    try {
+      const response = await host.serviceRequest({
+        method: 'POST',
+        path: '/token',
+        body: JSON.stringify({ token: value }),
+      });
+      let result: TokenResult | null = null;
+      try {
+        result = JSON.parse(response.body) as TokenResult;
+      } catch {
+        result = null;
+      }
+      if (result?.ok) {
+        tokenDraft = '';
+        void load(true);
+        return;
+      }
+      field.update({ error: tokenErrorText(result, response.status) });
+    } catch (error) {
+      field.update({ error: describeError(error) });
+    } finally {
+      saving = false;
+      if (form.isConnected) {
+        field.update({ disabled: false });
+        applyButton.update({ loading: false });
+      }
+    }
+  };
+
+  const applyButton = mountButton(actionsRoot, {
+    label: t('tokenApply'),
+    size: 'sm',
+    onClick: () => void apply(),
+  });
+  const issueButton = mountButton(actionsRoot, {
+    label: t('getOAuthToken'),
+    variant: 'ghost',
+    size: 'sm',
+    onClick: () => void host.openUrl(OAUTH_TOKEN_URL),
+  });
+  blocks.push(field, applyButton, issueButton);
+  return form;
 };
 
 const metricCard = (label: string, value: string, sub?: string): HTMLElement => {
@@ -432,9 +534,9 @@ const dataView = (payload: SummaryPayload): void => {
     blocks.push(mountBanner(bodyRoot, {
       tone: 'warning',
       title: t('apiKeyNoticeTitle'),
-      body: t('apiKeyNoticeBody', { path: payload.configPath }),
-      action: { label: t('getOAuthToken'), onClick: () => void host.openUrl(OAUTH_TOKEN_URL) },
+      body: t('apiKeyNoticeBody'),
     }));
+    bodyRoot.append(tokenForm(payload.configPath));
   }
   if (payload.stale) {
     blocks.push(mountBanner(bodyRoot, { tone: 'warning', title: t('stale') }));
@@ -539,9 +641,9 @@ const paint = (): void => {
         const usedApiKey = view.payload.credential === 'api-key';
         blocks.push(mountEmpty(bodyRoot, {
           title: t(usedApiKey ? 'invalidApiKeyTitle' : 'invalidOAuthTitle'),
-          body: t(usedApiKey ? 'invalidApiKeyBody' : 'invalidOAuthBody', { path: view.payload.configPath }),
-          action: { label: t('getOAuthToken'), onClick: () => void host.openUrl(OAUTH_TOKEN_URL) },
+          body: t(usedApiKey ? 'invalidApiKeyBody' : 'invalidOAuthBody'),
         }));
+        bodyRoot.append(tokenForm(view.payload.configPath));
         break;
       }
       const title = code === 'rate-limited'
@@ -563,8 +665,8 @@ const paint = (): void => {
         body: t(view.payload.reason === 'no-key' ? 'notConfiguredKey' : 'notConfiguredFile', {
           path: view.payload.configPath,
         }),
-        action: { label: t('getOAuthToken'), onClick: () => void host.openUrl(OAUTH_TOKEN_URL) },
       }));
+      bodyRoot.append(tokenForm(view.payload.configPath));
       break;
     case 'data':
       dataView(view.payload);

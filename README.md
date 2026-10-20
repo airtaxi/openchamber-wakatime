@@ -30,9 +30,11 @@ Since November 1, 2026, WakaTime API keys only work for plugins. Reading stats n
 
 1. Open [wakatime.com/oauth](https://wakatime.com/oauth) and create an app. It does not need to be published, because an unpublished app can still read your own account.
 2. Generate an access token for that app and copy it.
-3. Add it to the `[settings]` section of `~/.wakatime.cfg` as `oauth_token`. Leave `api_key` as it is, because the plugins still use it to send heartbeats.
+3. Paste it into the **OAuth token** field in the panel and choose **Apply**. The service checks the token with WakaTime first, then saves it to the `[settings]` section of `~/.wakatime.cfg` as `oauth_token`. You can also add that line by hand.
 
-When `oauth_token` is missing, the service falls back to `api_key` and the panel shows a notice asking you to add a token. If the file is missing or the token is rejected, the panel shows where it looked and a link to issue a token.
+Leave `api_key` as it is, because the plugins still use it to send heartbeats. The panel never changes it.
+
+When `oauth_token` is missing, the service falls back to `api_key` and the panel shows the token field under a notice. The same field appears when the config file is missing or WakaTime rejects the stored token.
 
 ## Install
 

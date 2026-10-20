@@ -30,9 +30,11 @@ oauth_token = waka_tok_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 1. [wakatime.com/oauth](https://wakatime.com/oauth)에서 앱을 만듭니다. 공개하지 않은 앱도 내 계정은 읽을 수 있으므로 공개(publish)할 필요가 없습니다.
 2. 그 앱의 액세스 토큰을 발급받아 복사합니다.
-3. `~/.wakatime.cfg`의 `[settings]` 섹션에 `oauth_token`으로 추가합니다. 플러그인이 하트비트를 보낼 때 계속 사용하므로 `api_key`는 그대로 둡니다.
+3. 패널의 **OAuth 토큰** 칸에 붙여 넣고 **적용**을 누릅니다. 서비스가 먼저 WakaTime에 토큰을 확인한 뒤, `~/.wakatime.cfg`의 `[settings]` 섹션에 `oauth_token`으로 저장합니다. 이 줄을 직접 추가해도 됩니다.
 
-`oauth_token`이 없으면 서비스는 `api_key`로 대신 시도하고, 패널은 토큰을 추가하라는 안내를 보여줍니다. 설정 파일이 없거나 토큰이 거부되면 패널이 어떤 경로를 확인했는지와 토큰 발급 링크를 함께 보여줍니다.
+플러그인이 하트비트를 보낼 때 계속 사용하므로 `api_key`는 그대로 둡니다. 패널도 이 값은 바꾸지 않습니다.
+
+`oauth_token`이 없으면 서비스는 `api_key`로 대신 시도하고, 패널은 안내와 함께 토큰 입력칸을 보여줍니다. 설정 파일이 없거나 저장된 토큰을 WakaTime이 거부할 때도 같은 입력칸이 나타납니다.
 
 ## 설치
 
