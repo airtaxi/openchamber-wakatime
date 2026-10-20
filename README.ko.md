@@ -4,7 +4,7 @@
 
 [OpenChamber](https://openchamber.dev)의 오른쪽 레일에 표시되는 WakaTime 패널입니다. 에디터를 벗어나지 않고 코딩 활동을 확인할 수 있습니다. 오늘 작업 시간, 일별 그래프, 언어와 프로젝트 순위, 에디터와 운영체제, 그리고 WakaTime이 집계하는 AI 코딩 비용까지 보여줍니다.
 
-이 패널은 WakaTime 플러그인이 기록하는 `~/.wakatime.cfg`에서 API 키를 읽으므로, OpenChamber에 따로 토큰을 붙여넣을 필요가 없습니다.
+이 패널은 WakaTime 플러그인이 기록하는 `~/.wakatime.cfg`에서 WakaTime OAuth 토큰을 읽으므로, OpenChamber에 따로 토큰을 붙여넣을 필요가 없습니다.
 
 ## 스크린샷
 
@@ -16,14 +16,23 @@
 ## 요구 사항
 
 - OpenChamber `2.0.0` 이상이며, 웹 또는 데스크톱에서 동작합니다.
-- OpenChamber 서버를 실행하는 컴퓨터에 `~/.wakatime.cfg` 파일이 있어야 하고, `[settings]` 섹션에 `api_key`가 들어 있어야 합니다. 공식 WakaTime 플러그인으로 로그인하면 이 파일이 만들어집니다.
+- OpenChamber 서버를 실행하는 컴퓨터에 `~/.wakatime.cfg` 파일이 있어야 하고, `[settings]` 섹션에 `oauth_token`이 들어 있어야 합니다. 이 파일은 공식 WakaTime 플러그인으로 로그인하면 만들어지며, `oauth_token` 줄은 직접 추가합니다.
 
 ```ini
 [settings]
 api_key = waka_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+oauth_token = waka_tok_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-설정 파일이 없으면 패널이 어떤 경로를 확인했는지와 API 키 발급 링크를 함께 보여줍니다.
+### OAuth 토큰 발급
+
+2026년 11월 1일부터 WakaTime API 키는 플러그인에서만 동작합니다. 통계를 읽으려면 OAuth 토큰이 필요합니다.
+
+1. [wakatime.com/oauth](https://wakatime.com/oauth)에서 앱을 만듭니다. 공개하지 않은 앱도 내 계정은 읽을 수 있으므로 공개(publish)할 필요가 없습니다.
+2. 그 앱의 액세스 토큰을 발급받아 복사합니다.
+3. `~/.wakatime.cfg`의 `[settings]` 섹션에 `oauth_token`으로 추가합니다. 플러그인이 하트비트를 보낼 때 계속 사용하므로 `api_key`는 그대로 둡니다.
+
+`oauth_token`이 없으면 서비스는 `api_key`로 대신 시도하고, 패널은 토큰을 추가하라는 안내를 보여줍니다. 설정 파일이 없거나 토큰이 거부되면 패널이 어떤 경로를 확인했는지와 토큰 발급 링크를 함께 보여줍니다.
 
 ## 설치
 
@@ -37,7 +46,7 @@ api_key = waka_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
 패널은 샌드박스 iframe에서 실행되므로 네트워크에 직접 접근할 수 없습니다. 또한 호스트는 통합 카드에 직접 붙여넣은 토큰만 요청에 실어 줍니다. 그래서 `~/.wakatime.cfg`를 읽고 `https://api.wakatime.com`을 호출하려면 확장 옆에 작은 프로세스가 필요합니다. OpenChamber가 이 폴더의 `service/main.js`를 자체 런타임으로 실행하고, 패널은 `host.serviceRequest`를 통해 그 프로세스와 통신합니다.
 
-API 키는 패널에 전달되지 않고, 패널은 네트워크에 접근하지 않습니다. 서비스는 `127.0.0.1`에서 수신하며 호스트가 이를 프록시합니다.
+토큰은 패널에 전달되지 않고, 패널은 네트워크에 접근하지 않습니다. 서비스는 `127.0.0.1`에서 수신하며 호스트가 이를 프록시합니다.
 
 ## 패널에 표시되는 내용
 
@@ -52,7 +61,7 @@ UI는 앱 언어를 따릅니다. 로케일이 `ko`로 시작하면 한국어를
 
 ## 사용하는 엔드포인트
 
-모든 호출은 `https://api.wakatime.com/api/v1`에 대해 `Authorization: Basic base64(api_key)` 형식을 사용합니다.
+모든 호출은 `https://api.wakatime.com/api/v1`에 `Authorization: Bearer <oauth_token>` 헤더로 보냅니다. 플러그인 키만 있을 때는 `Authorization: Basic base64(api_key)` 형식을 사용합니다.
 
 | 패널 범위 | 요청 |
 | --- | --- |

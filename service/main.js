@@ -40,6 +40,7 @@ var resolveConfigPath = () => {
   const override = process.env.OPENCHAMBER_WAKATIME_CONFIG?.trim();
   return override && override.length > 0 ? override : path.join(homeDirectory(), ".wakatime.cfg");
 };
+var unquote = (value) => value.trim().replace(/^["']|["']$/g, "");
 var readConfig = () => {
   const configPath = resolveConfigPath();
   let raw;
@@ -48,17 +49,24 @@ var readConfig = () => {
   } catch {
     return { configured: false, reason: "no-file", configPath };
   }
+  let oauthToken = "";
   let apiKey = "";
   for (const line of raw.replace(/^\uFEFF/, "").split(/\r?\n/)) {
-    const match = /^\s*api_?key\s*=\s*(.*)$/i.exec(line);
-    if (match)
-      apiKey = match[1].trim().replace(/^["']|["']$/g, "");
+    const oauthMatch = /^\s*oauth_?token\s*=\s*(.*)$/i.exec(line);
+    if (oauthMatch)
+      oauthToken = unquote(oauthMatch[1]);
+    const keyMatch = /^\s*api_?key\s*=\s*(.*)$/i.exec(line);
+    if (keyMatch)
+      apiKey = unquote(keyMatch[1]);
   }
-  if (!apiKey)
-    return { configured: false, reason: "no-key", configPath };
-  return { configured: true, apiKey, configPath };
+  if (oauthToken)
+    return { configured: true, credential: { kind: "oauth", secret: oauthToken }, configPath };
+  if (apiKey)
+    return { configured: true, credential: { kind: "api-key", secret: apiKey }, configPath };
+  return { configured: false, reason: "no-key", configPath };
 };
-var upstream = async (apiKey, apiPath, query) => {
+var authorizationHeader = (credential) => credential.kind === "oauth" ? `Bearer ${credential.secret}` : `Basic ${Buffer.from(credential.secret).toString("base64")}`;
+var upstream = async (credential, apiPath, query) => {
   const url = new URL(`${API_ORIGIN}${apiPath}`);
   for (const [key, value] of Object.entries(query ?? {}))
     url.searchParams.set(key, value);
@@ -66,9 +74,9 @@ var upstream = async (apiKey, apiPath, query) => {
   try {
     response = await fetch(url, {
       headers: {
-        Authorization: `Basic ${Buffer.from(apiKey).toString("base64")}`,
+        Authorization: authorizationHeader(credential),
         Accept: "application/json",
-        "User-Agent": "openchamber-wakatime/1.0.0"
+        "User-Agent": "openchamber-wakatime/1.1.0"
       },
       redirect: "manual",
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
@@ -78,7 +86,8 @@ var upstream = async (apiKey, apiPath, query) => {
     throw new UpstreamError("network", `Could not reach WakaTime: ${detail}`, 502);
   }
   if (response.status === 401 || response.status === 403) {
-    throw new UpstreamError("invalid-key", "WakaTime rejected the stored API key.", 401);
+    const label = credential.kind === "oauth" ? "OAuth token" : "API key";
+    throw new UpstreamError("invalid-key", `WakaTime rejected the stored ${label}.`, 401);
   }
   if (response.status === 429 || response.status >= 300 && response.status < 400) {
     throw new UpstreamError("rate-limited", "WakaTime is throttling this instance. Try again in a moment.", 429);
@@ -262,13 +271,13 @@ var rankingFor = (statItems, days, field) => {
   const fromStats = ranked(statItems);
   return fromStats.length > 0 ? fromStats : aggregateRanked(days, field);
 };
-var buildSummary = async (range, apiKey, configPath) => {
+var buildSummary = async (range, credential, configPath) => {
   const spec = RANGE_SPEC[range];
   const [userResult, summaryResult, statsResult, allTimeResult] = await Promise.all([
-    upstream(apiKey, "/users/current"),
-    settle(upstream(apiKey, "/users/current/summaries", { range: spec.summary })),
-    spec.stats ? settle(upstream(apiKey, `/users/current/stats/${spec.stats}`)) : Promise.resolve(null),
-    settle(upstream(apiKey, "/users/current/all_time_since_today"))
+    upstream(credential, "/users/current"),
+    settle(upstream(credential, "/users/current/summaries", { range: spec.summary })),
+    spec.stats ? settle(upstream(credential, `/users/current/stats/${spec.stats}`)) : Promise.resolve(null),
+    settle(upstream(credential, "/users/current/all_time_since_today"))
   ]);
   const userRaw = userResult.body?.data ?? null;
   const daysRaw = Array.isArray(summaryResult?.body?.data) ? summaryResult.body.data : [];
@@ -301,6 +310,7 @@ var buildSummary = async (range, apiKey, configPath) => {
   return {
     configured: true,
     configPath,
+    credential: credential.kind,
     range,
     fetchedAt: new Date().toISOString(),
     cached: false,
@@ -343,7 +353,7 @@ var handleSummary = async (url, response) => {
   const refresh = url.searchParams.get("refresh") === "1";
   const config = readConfig();
   const fetchedAt = new Date().toISOString();
-  if (!config.configured) {
+  if (!config.configured || !config.credential) {
     json(response, 200, {
       configured: false,
       reason: config.reason ?? "no-file",
@@ -355,20 +365,22 @@ var handleSummary = async (url, response) => {
     });
     return;
   }
+  const credential = config.credential;
   const hit = cache.get(range);
-  if (!refresh && hit && Date.now() - hit.at < CACHE_TTL_MS) {
+  if (!refresh && hit && hit.credential === credential.secret && Date.now() - hit.at < CACHE_TTL_MS) {
     json(response, 200, { ...hit.payload, cached: true, fetchedAt });
     return;
   }
   try {
-    const payload = await buildSummary(range, config.apiKey ?? "", config.configPath);
-    cache.set(range, { at: Date.now(), payload });
+    const payload = await buildSummary(range, credential, config.configPath);
+    cache.set(range, { at: Date.now(), credential: credential.secret, payload });
     json(response, 200, payload);
   } catch (error) {
     if (error instanceof UpstreamError) {
       json(response, error.status, {
         configured: true,
         configPath: config.configPath,
+        credential: credential.kind,
         range,
         fetchedAt,
         cached: false,

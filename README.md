@@ -4,7 +4,7 @@
 
 A WakaTime panel for [OpenChamber](https://openchamber.dev). It sits on the right-hand rail and shows your coding activity without leaving the editor: today's time, a daily chart, language and project rankings, editors and operating systems, and the AI coding cost WakaTime tracks.
 
-The panel reads the API key from `~/.wakatime.cfg`, the same file the WakaTime plugins write, so there is nothing to paste into OpenChamber.
+The panel reads a WakaTime OAuth token from `~/.wakatime.cfg`, the same file the WakaTime plugins write, so there is nothing to paste into OpenChamber.
 
 ## Screenshots
 
@@ -16,14 +16,23 @@ The panel reads the API key from `~/.wakatime.cfg`, the same file the WakaTime p
 ## Requirements
 
 - OpenChamber `2.0.0` or newer, on web or desktop.
-- A `~/.wakatime.cfg` on the machine that runs the OpenChamber server, with an `api_key` in the `[settings]` section. Any official WakaTime plugin creates this file when you sign in.
+- A `~/.wakatime.cfg` on the machine that runs the OpenChamber server, with an `oauth_token` in the `[settings]` section. Any official WakaTime plugin creates this file when you sign in; the `oauth_token` line is added by hand.
 
 ```ini
 [settings]
 api_key = waka_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+oauth_token = waka_tok_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-If that file is missing, the panel shows where it looked and a link to issue a key.
+### Getting an OAuth token
+
+Since November 1, 2026, WakaTime API keys only work for plugins. Reading stats needs an OAuth token instead.
+
+1. Open [wakatime.com/oauth](https://wakatime.com/oauth) and create an app. It does not need to be published, because an unpublished app can still read your own account.
+2. Generate an access token for that app and copy it.
+3. Add it to the `[settings]` section of `~/.wakatime.cfg` as `oauth_token`. Leave `api_key` as it is, because the plugins still use it to send heartbeats.
+
+When `oauth_token` is missing, the service falls back to `api_key` and the panel shows a notice asking you to add a token. If the file is missing or the token is rejected, the panel shows where it looked and a link to issue a token.
 
 ## Install
 
@@ -37,7 +46,7 @@ Either way, OpenChamber shows the permission list once. This extension declares 
 
 A panel runs in a sandboxed iframe. It cannot reach the network directly, and the host only attaches tokens you pasted on an Integrations card. Reading `~/.wakatime.cfg` and calling `https://api.wakatime.com` therefore needs a small process next to the extension. OpenChamber starts `service/main.js` from this folder with its own runtime, and the panel talks to it through `host.serviceRequest`.
 
-The API key never reaches the panel, and the panel never sees the network. The service listens on `127.0.0.1` and the host proxies to it.
+The token never reaches the panel, and the panel never sees the network. The service listens on `127.0.0.1` and the host proxies to it.
 
 ## What the panel shows
 
@@ -52,7 +61,7 @@ The UI follows the app language: Korean when the locale starts with `ko`, Englis
 
 ## Endpoints used
 
-All calls use `Authorization: Basic base64(api_key)` against `https://api.wakatime.com/api/v1`.
+All calls go to `https://api.wakatime.com/api/v1` with `Authorization: Bearer <oauth_token>`, or `Authorization: Basic base64(api_key)` when only the plugin key is available.
 
 | Panel range | Requests |
 | --- | --- |

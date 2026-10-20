@@ -4,8 +4,9 @@
  * The panel runs in a sandboxed iframe that cannot reach the network, and the
  * host only attaches tokens the user pasted on an Integrations card. So this
  * process, which the OpenChamber host spawns from the extension folder, reads
- * the API key from ~/.wakatime.cfg itself, calls the WakaTime API, and answers
- * the panel over the host's loopback proxy. The key never leaves this process.
+ * the OAuth token from ~/.wakatime.cfg itself, calls the WakaTime API, and
+ * answers the panel over the host's loopback proxy. The token never leaves
+ * this process.
  *
  * Contract: packages/sdk/GUEST_SERVICES.md in the OpenChamber repository.
  */
@@ -36,10 +37,13 @@ const RANGE_SPEC: Record<Range, { summary: string; stats: string | null }> = {
   '30d': { summary: 'Last 30 Days', stats: 'last_30_days' },
 };
 
+type CredentialKind = 'oauth' | 'api-key';
+type Credential = { kind: CredentialKind; secret: string };
+
 type ConfigState = {
   configured: boolean;
   reason?: 'no-file' | 'no-key';
-  apiKey?: string;
+  credential?: Credential;
   configPath: string;
 };
 
@@ -65,6 +69,7 @@ type SummaryPayload = {
   configured: boolean;
   reason?: 'no-file' | 'no-key';
   configPath: string;
+  credential?: CredentialKind;
   range: Range;
   fetchedAt: string;
   cached: boolean;
@@ -124,10 +129,14 @@ const resolveConfigPath = (): string => {
   return override && override.length > 0 ? override : path.join(homeDirectory(), '.wakatime.cfg');
 };
 
+const unquote = (value: string): string => value.trim().replace(/^["']|["']$/g, '');
+
 /**
- * ~/.wakatime.cfg is INI-like. The key lives in [settings] as `api_key = ...`,
- * but reading every `api_key` line and keeping the last one tolerates the
- * variations different WakaTime plugins write.
+ * ~/.wakatime.cfg is INI-like. WakaTime API keys only authorize plugins, so
+ * reading stats needs an OAuth token stored next to the plugin key in
+ * [settings] as `oauth_token = ...`. The plugin `api_key` stays untouched and
+ * is used only as a fallback. Reading every matching line and keeping the
+ * last one tolerates the variations different WakaTime plugins write.
  */
 const readConfig = (): ConfigState => {
   const configPath = resolveConfigPath();
@@ -137,19 +146,29 @@ const readConfig = (): ConfigState => {
   } catch {
     return { configured: false, reason: 'no-file', configPath };
   }
+  let oauthToken = '';
   let apiKey = '';
   for (const line of raw.replace(/^\uFEFF/, '').split(/\r?\n/)) {
-    const match = /^\s*api_?key\s*=\s*(.*)$/i.exec(line);
-    if (match) apiKey = match[1].trim().replace(/^["']|["']$/g, '');
+    const oauthMatch = /^\s*oauth_?token\s*=\s*(.*)$/i.exec(line);
+    if (oauthMatch) oauthToken = unquote(oauthMatch[1]);
+    const keyMatch = /^\s*api_?key\s*=\s*(.*)$/i.exec(line);
+    if (keyMatch) apiKey = unquote(keyMatch[1]);
   }
-  if (!apiKey) return { configured: false, reason: 'no-key', configPath };
-  return { configured: true, apiKey, configPath };
+  if (oauthToken) return { configured: true, credential: { kind: 'oauth', secret: oauthToken }, configPath };
+  if (apiKey) return { configured: true, credential: { kind: 'api-key', secret: apiKey }, configPath };
+  return { configured: false, reason: 'no-key', configPath };
 };
+
+const authorizationHeader = (credential: Credential): string => (
+  credential.kind === 'oauth'
+    ? `Bearer ${credential.secret}`
+    : `Basic ${Buffer.from(credential.secret).toString('base64')}`
+);
 
 type UpstreamResult = { body: any; stale: boolean };
 
 const upstream = async (
-  apiKey: string,
+  credential: Credential,
   apiPath: string,
   query?: Record<string, string>,
 ): Promise<UpstreamResult> => {
@@ -160,9 +179,9 @@ const upstream = async (
   try {
     response = await fetch(url, {
       headers: {
-        Authorization: `Basic ${Buffer.from(apiKey).toString('base64')}`,
+        Authorization: authorizationHeader(credential),
         Accept: 'application/json',
-        'User-Agent': 'openchamber-wakatime/1.0.0',
+        'User-Agent': 'openchamber-wakatime/1.1.0',
       },
       // WakaTime sometimes answers 302 instead of 429 when it throttles.
       redirect: 'manual',
@@ -174,7 +193,8 @@ const upstream = async (
   }
 
   if (response.status === 401 || response.status === 403) {
-    throw new UpstreamError('invalid-key', 'WakaTime rejected the stored API key.', 401);
+    const label = credential.kind === 'oauth' ? 'OAuth token' : 'API key';
+    throw new UpstreamError('invalid-key', `WakaTime rejected the stored ${label}.`, 401);
   }
   if (response.status === 429 || (response.status >= 300 && response.status < 400)) {
     throw new UpstreamError('rate-limited', 'WakaTime is throttling this instance. Try again in a moment.', 429);
@@ -378,15 +398,15 @@ const rankingFor = (statItems: unknown, days: any[], field: string): Ranked[] =>
   return fromStats.length > 0 ? fromStats : aggregateRanked(days, field);
 };
 
-const buildSummary = async (range: Range, apiKey: string, configPath: string): Promise<SummaryPayload> => {
+const buildSummary = async (range: Range, credential: Credential, configPath: string): Promise<SummaryPayload> => {
   const spec = RANGE_SPEC[range];
 
-  // The user call validates the key, so its errors are not swallowed.
+  // The user call validates the credential, so its errors are not swallowed.
   const [userResult, summaryResult, statsResult, allTimeResult] = await Promise.all([
-    upstream(apiKey, '/users/current'),
-    settle(upstream(apiKey, '/users/current/summaries', { range: spec.summary })),
-    spec.stats ? settle(upstream(apiKey, `/users/current/stats/${spec.stats}`)) : Promise.resolve(null),
-    settle(upstream(apiKey, '/users/current/all_time_since_today')),
+    upstream(credential, '/users/current'),
+    settle(upstream(credential, '/users/current/summaries', { range: spec.summary })),
+    spec.stats ? settle(upstream(credential, `/users/current/stats/${spec.stats}`)) : Promise.resolve(null),
+    settle(upstream(credential, '/users/current/all_time_since_today')),
   ]);
 
   const userRaw = userResult.body?.data ?? null;
@@ -444,6 +464,7 @@ const buildSummary = async (range: Range, apiKey: string, configPath: string): P
   return {
     configured: true,
     configPath,
+    credential: credential.kind,
     range,
     fetchedAt: new Date().toISOString(),
     cached: false,
@@ -477,7 +498,7 @@ const buildSummary = async (range: Range, apiKey: string, configPath: string): P
   };
 };
 
-const cache = new Map<Range, { at: number; payload: SummaryPayload }>();
+const cache = new Map<Range, { at: number; credential: string; payload: SummaryPayload }>();
 
 const json = (response: http.ServerResponse, status: number, body: unknown): void => {
   response.writeHead(status, {
@@ -497,7 +518,7 @@ const handleSummary = async (url: URL, response: http.ServerResponse): Promise<v
   const config = readConfig();
   const fetchedAt = new Date().toISOString();
 
-  if (!config.configured) {
+  if (!config.configured || !config.credential) {
     json(response, 200, {
       configured: false,
       reason: config.reason ?? 'no-file',
@@ -510,21 +531,23 @@ const handleSummary = async (url: URL, response: http.ServerResponse): Promise<v
     return;
   }
 
+  const credential = config.credential;
   const hit = cache.get(range);
-  if (!refresh && hit && Date.now() - hit.at < CACHE_TTL_MS) {
+  if (!refresh && hit && hit.credential === credential.secret && Date.now() - hit.at < CACHE_TTL_MS) {
     json(response, 200, { ...hit.payload, cached: true, fetchedAt });
     return;
   }
 
   try {
-    const payload = await buildSummary(range, config.apiKey ?? '', config.configPath);
-    cache.set(range, { at: Date.now(), payload });
+    const payload = await buildSummary(range, credential, config.configPath);
+    cache.set(range, { at: Date.now(), credential: credential.secret, payload });
     json(response, 200, payload);
   } catch (error) {
     if (error instanceof UpstreamError) {
       json(response, error.status, {
         configured: true,
         configPath: config.configPath,
+        credential: credential.kind,
         range,
         fetchedAt,
         cached: false,

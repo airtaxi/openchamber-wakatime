@@ -39,6 +39,7 @@ type SummaryPayload = {
   configured: boolean;
   reason?: 'no-file' | 'no-key';
   configPath: string;
+  credential?: 'oauth' | 'api-key';
   range: Range;
   fetchedAt: string;
   cached: boolean;
@@ -74,7 +75,7 @@ type ViewState =
   | { kind: 'data'; payload: SummaryPayload };
 
 const DASHBOARD_URL = 'https://wakatime.com/dashboard';
-const API_KEY_URL = 'https://wakatime.com/api-key';
+const OAUTH_TOKEN_URL = 'https://wakatime.com/oauth';
 const REFRESH_MS = 5 * 60 * 1000;
 
 const EN: Record<string, string> = {
@@ -113,11 +114,15 @@ const EN: Record<string, string> = {
   updated: 'Updated',
   openDashboard: 'Open wakatime.com',
   notConfiguredTitle: 'WakaTime is not connected',
-  notConfiguredFile: 'No config file was found at {path} on the OpenChamber server. Install a WakaTime plugin, or create that file with an api_key in the [settings] section.',
-  notConfiguredKey: 'The config at {path} has no api_key. Add one to the [settings] section.',
-  getApiKey: 'Get an API key',
-  invalidKeyTitle: 'WakaTime rejected the API key',
-  invalidKeyBody: 'Check api_key in {path}, or issue a new key and update the file.',
+  notConfiguredFile: 'No config file was found at {path} on the OpenChamber server. Create that file and add an oauth_token to the [settings] section.',
+  notConfiguredKey: 'The config at {path} has no oauth_token. Add one to the [settings] section.',
+  getOAuthToken: 'Get an OAuth token',
+  invalidOAuthTitle: 'WakaTime rejected the OAuth token',
+  invalidOAuthBody: 'The token may have expired or been revoked. Issue a new one and update oauth_token in {path}.',
+  invalidApiKeyTitle: 'WakaTime no longer accepts the API key for stats',
+  invalidApiKeyBody: 'WakaTime API keys now work only for plugins. Add an oauth_token to the [settings] section of {path}.',
+  apiKeyNoticeTitle: 'Switch to an OAuth token',
+  apiKeyNoticeBody: 'Stats are read with the plugin API key, which WakaTime is limiting to plugins. Add an oauth_token to the [settings] section of {path}.',
   rateLimitedTitle: 'WakaTime is throttling requests',
   networkTitle: 'Could not reach WakaTime',
   apiErrorTitle: 'WakaTime answered with an error',
@@ -162,11 +167,15 @@ const KO: Record<string, string> = {
   updated: '갱신',
   openDashboard: 'wakatime.com 열기',
   notConfiguredTitle: 'WakaTime이 연결되지 않았습니다',
-  notConfiguredFile: 'OpenChamber 서버의 {path}에서 설정 파일을 찾지 못했습니다. WakaTime 플러그인을 설치하거나, [settings] 섹션에 api_key를 넣어 파일을 만들어 주세요.',
-  notConfiguredKey: '{path}에 api_key가 없습니다. [settings] 섹션에 추가해 주세요.',
-  getApiKey: 'API 키 발급받기',
-  invalidKeyTitle: 'WakaTime이 API 키를 거부했습니다',
-  invalidKeyBody: '{path}의 api_key를 확인하거나, 새 키를 발급해 파일을 갱신해 주세요.',
+  notConfiguredFile: 'OpenChamber 서버의 {path}에서 설정 파일을 찾지 못했습니다. 파일을 만들고 [settings] 섹션에 oauth_token을 추가해 주세요.',
+  notConfiguredKey: '{path}에 oauth_token이 없습니다. [settings] 섹션에 추가해 주세요.',
+  getOAuthToken: 'OAuth 토큰 발급받기',
+  invalidOAuthTitle: 'WakaTime이 OAuth 토큰을 거부했습니다',
+  invalidOAuthBody: '토큰이 만료되었거나 취소되었을 수 있습니다. 새 토큰을 발급해 {path}의 oauth_token을 갱신해 주세요.',
+  invalidApiKeyTitle: 'WakaTime이 더 이상 API 키로 통계를 제공하지 않습니다',
+  invalidApiKeyBody: '이제 WakaTime API 키는 플러그인에서만 쓸 수 있습니다. {path}의 [settings] 섹션에 oauth_token을 추가해 주세요.',
+  apiKeyNoticeTitle: 'OAuth 토큰으로 전환해 주세요',
+  apiKeyNoticeBody: '지금은 플러그인용 API 키로 통계를 읽고 있습니다. WakaTime이 API 키를 플러그인 전용으로 제한하므로, {path}의 [settings] 섹션에 oauth_token을 추가해 주세요.',
   rateLimitedTitle: 'WakaTime이 요청을 제한하고 있습니다',
   networkTitle: 'WakaTime에 연결하지 못했습니다',
   apiErrorTitle: 'WakaTime이 오류를 반환했습니다',
@@ -419,6 +428,14 @@ const aiSection = (lines: LineSplit | undefined, ai: AiSummary | null | undefine
 };
 
 const dataView = (payload: SummaryPayload): void => {
+  if (payload.credential === 'api-key') {
+    blocks.push(mountBanner(bodyRoot, {
+      tone: 'warning',
+      title: t('apiKeyNoticeTitle'),
+      body: t('apiKeyNoticeBody', { path: payload.configPath }),
+      action: { label: t('getOAuthToken'), onClick: () => void host.openUrl(OAUTH_TOKEN_URL) },
+    }));
+  }
   if (payload.stale) {
     blocks.push(mountBanner(bodyRoot, { tone: 'warning', title: t('stale') }));
   }
@@ -519,10 +536,11 @@ const paint = (): void => {
     case 'api-error': {
       const code = view.payload.error?.code ?? 'api';
       if (code === 'invalid-key') {
+        const usedApiKey = view.payload.credential === 'api-key';
         blocks.push(mountEmpty(bodyRoot, {
-          title: t('invalidKeyTitle'),
-          body: t('invalidKeyBody', { path: view.payload.configPath }),
-          action: { label: t('getApiKey'), onClick: () => void host.openUrl(API_KEY_URL) },
+          title: t(usedApiKey ? 'invalidApiKeyTitle' : 'invalidOAuthTitle'),
+          body: t(usedApiKey ? 'invalidApiKeyBody' : 'invalidOAuthBody', { path: view.payload.configPath }),
+          action: { label: t('getOAuthToken'), onClick: () => void host.openUrl(OAUTH_TOKEN_URL) },
         }));
         break;
       }
@@ -545,7 +563,7 @@ const paint = (): void => {
         body: t(view.payload.reason === 'no-key' ? 'notConfiguredKey' : 'notConfiguredFile', {
           path: view.payload.configPath,
         }),
-        action: { label: t('getApiKey'), onClick: () => void host.openUrl(API_KEY_URL) },
+        action: { label: t('getOAuthToken'), onClick: () => void host.openUrl(OAUTH_TOKEN_URL) },
       }));
       break;
     case 'data':
