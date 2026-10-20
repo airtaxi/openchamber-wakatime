@@ -343,7 +343,6 @@ const tokenForm = (configPath: string): HTMLElement => {
     label: t('tokenLabel'),
     value: tokenDraft,
     placeholder: 'waka_tok_…',
-    password: true,
     mono: true,
     helper,
     onChange: (value) => {

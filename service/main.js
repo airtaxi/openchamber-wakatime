@@ -76,7 +76,7 @@ var upstream = async (credential, apiPath, query) => {
       headers: {
         Authorization: authorizationHeader(credential),
         Accept: "application/json",
-        "User-Agent": "openchamber-wakatime/1.1.1"
+        "User-Agent": "openchamber-wakatime/1.1.2"
       },
       redirect: "manual",
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)
